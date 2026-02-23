@@ -1,7 +1,7 @@
 # .github/workflows/refresh-npm-cache.yml
 #
 # Populates the OnlyOffice DocumentServer npm _cacache for use in
-# offline poudriere builds.  The resulting commit is tagged with the
+# offline poudriere builds. The resulting commit is tagged with the
 # same scheme used in the port's GH_TUPLE, e.g. v9.1.0.177-20250223.
 #
 # Workflow inputs let you override every version variable so the same
@@ -11,16 +11,17 @@
 # Optional repository secret:  GPG_PRIVATE_KEY + GPG_PASSPHRASE if you
 #   want signed tags (see the "Sign tag" step comments).
 #
-# IMPORTANT — why --ignore-scripts is used for native packages:
+# NOTE: workflow_dispatch only fires from the repository's default branch.
+# Merge this file to your default branch before attempting to trigger it.
 #
+# IMPORTANT - why --ignore-scripts is used for native packages:
 #   sharp, modern-syslog, and optipng-bin all have postinstall scripts
 #   that either compile a native addon or download a prebuilt binary.
-#   Running those scripts on the Ubuntu runner would deposit Linux ELF
-#   binaries into the cache that are useless (and wrong) for a FreeBSD
-#   jail.  The port handles native compilation itself inside the jail
-#   using the system libvips, libc, etc.  All the cache needs to
-#   supply is the source tarballs and pure-JS dependencies, so every
-#   install of those three packages uses --ignore-scripts here.
+#   Running those on the Ubuntu runner would deposit Linux ELF binaries
+#   into the cache that are useless inside a FreeBSD jail. The port
+#   handles native compilation itself inside the jail using the system
+#   libvips, libc, etc. All the cache needs to supply is the source
+#   tarballs and pure-JS dependencies.
 
 name: Refresh npm Cache
 
@@ -64,58 +65,41 @@ jobs:
       SHARP_VER: "${{ github.event.inputs.sharp_ver }}"
       SYSLOG_VER: "${{ github.event.inputs.modern_syslog_ver }}"
       YAO_PKG_VER: "${{ github.event.inputs.yao_pkg_ver }}"
-      # All npm operations write to this single cache directory.
-      # At the end we commit its _cacache sub-directory.
       NPM_CACHE: "${{ github.workspace }}/npm-cache"
 
     steps:
-      # ------------------------------------------------------------------ #
-      #  1. Check out this cache repository (where we will commit results) #
-      # ------------------------------------------------------------------ #
       - name: Checkout npm-cache repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ------------------------------------------------------------------ #
-      #  2. Pin the exact Node.js version the port uses                    #
-      # ------------------------------------------------------------------ #
       - name: Set up Node.js ${{ env.NODE_VER }}
         uses: actions/setup-node@v4
         with:
           node-version: "${{ env.NODE_VER }}"
 
-      # ------------------------------------------------------------------ #
-      #  3. Clone ONLYOFFICE source repositories at the release tag        #
-      #     We only need the directories that contain package.json files.  #
-      # ------------------------------------------------------------------ #
-      - name: Clone ONLYOFFICE/web-apps (for web-apps/build)
+      - name: Clone ONLYOFFICE/web-apps
         run: |
           git clone --depth 1 --branch "$DS_TAG" \
             https://github.com/ONLYOFFICE/web-apps.git \
             src/web-apps
 
-      - name: Clone ONLYOFFICE/server (for server, DocService, Metrics)
+      - name: Clone ONLYOFFICE/server
         run: |
           git clone --depth 1 --branch "$DS_TAG" \
             https://github.com/ONLYOFFICE/server.git \
             src/server
 
-      - name: Clone ONLYOFFICE/sdkjs (for sdkjs)
+      - name: Clone ONLYOFFICE/sdkjs
         run: |
           git clone --depth 1 --branch "$DS_TAG" \
             https://github.com/ONLYOFFICE/sdkjs.git \
             src/sdkjs
 
-      # ------------------------------------------------------------------ #
-      #  4. Create a minimal package.json for the yao-pkg install          #
-      #     The real port uses files from FILESDIR; we replicate the       #
-      #     minimal structure needed to pull the correct package version.  #
-      # ------------------------------------------------------------------ #
       - name: Create yao-pkg workspace
         run: |
           mkdir -p src/yao-pkg
-          cat > src/yao-pkg/package.json <<EOF
+          cat > src/yao-pkg/package.json << EOF
           {
             "name": "yao-pkg-cache-seed",
             "version": "1.0.0",
@@ -126,161 +110,132 @@ jobs:
           }
           EOF
 
-      # ------------------------------------------------------------------ #
-      #  5. Populate the npm cache — mirrors do-build in the port Makefile #
-      #                                                                    #
-      #  --cache "$NPM_CACHE" routes every download through our target     #
-      #  directory so a single _cacache is built up across all installs.   #
-      #                                                                    #
-      #  Packages with native addons or binary postinstalls                #
-      #  (sharp, modern-syslog, optipng-bin) are ALWAYS installed with     #
-      #  --ignore-scripts.  We want source tarballs in the cache, not      #
-      #  Linux ELF binaries that would be wrong inside a FreeBSD jail.     #
-      # ------------------------------------------------------------------ #
-
-      # -- web-apps/build --------------------------------------------------
-      - name: npm install web-apps/build — patch-package
+      # web-apps/build
+      - name: "web-apps/build: npm install patch-package"
         working-directory: src/web-apps/build
         run: npm install --cache "$NPM_CACHE" patch-package
 
-      # optipng-bin postinstall downloads a prebuilt Linux binary; skip it.
-      # The port patches the postinstall to use the system optipng instead.
-      - name: npm install web-apps/build — optipng-bin@5.1.0 (ignore-scripts)
+      - name: "web-apps/build: npm install optipng-bin@5.1.0 (ignore-scripts)"
         working-directory: src/web-apps/build
         run: npm install --cache "$NPM_CACHE" --ignore-scripts optipng-bin@5.1.0
 
-      # -- server ----------------------------------------------------------
-      - name: npm install server — grunt-cli
+      # server
+      - name: "server: npm install grunt-cli"
         working-directory: src/server
         run: npm install --cache "$NPM_CACHE" grunt-cli
 
-      - name: npm install server — grunt
+      - name: "server: npm install grunt"
         working-directory: src/server
         run: npm install --cache "$NPM_CACHE" grunt
 
-      # -- server/DocService -----------------------------------------------
-      # The port runs sharp twice: --ignore-scripts first, then a full build
-      # inside the jail against the FreeBSD libvips.  We only ever need the
-      # source tarball in the cache, so --ignore-scripts is sufficient here.
-      - name: npm install DocService — sharp (ignore-scripts)
+      # server/DocService
+      - name: "DocService: npm install sharp (ignore-scripts)"
         working-directory: src/server/DocService
         run: npm install --cache "$NPM_CACHE" --ignore-scripts "sharp@$SHARP_VER"
 
-      - name: npm install DocService — patch-package
+      - name: "DocService: npm install patch-package"
         working-directory: src/server/DocService
         run: npm install --cache "$NPM_CACHE" patch-package
 
-      # -- server/Metrics --------------------------------------------------
-      # Same reasoning as sharp above.
-      - name: npm install Metrics — modern-syslog (ignore-scripts)
+      # server/Metrics
+      - name: "Metrics: npm install modern-syslog (ignore-scripts)"
         working-directory: src/server/Metrics
         run: npm install --cache "$NPM_CACHE" --ignore-scripts "modern-syslog@$SYSLOG_VER"
 
-      - name: npm install Metrics — patch-package
+      - name: "Metrics: npm install patch-package"
         working-directory: src/server/Metrics
         run: npm install --cache "$NPM_CACHE" patch-package
 
-      # -- sdkjs -----------------------------------------------------------
-      - name: npm install sdkjs — grunt-cli
+      # sdkjs
+      - name: "sdkjs: npm install grunt-cli"
         working-directory: src/sdkjs
         run: npm install --cache "$NPM_CACHE" grunt-cli
 
-      - name: npm install sdkjs — grunt
+      - name: "sdkjs: npm install grunt"
         working-directory: src/sdkjs
         run: npm install --cache "$NPM_CACHE" grunt
 
-      # -- yao-pkg ---------------------------------------------------------
-      - name: npm install yao-pkg — @yao-pkg/pkg
+      # yao-pkg
+      - name: "yao-pkg: npm install @yao-pkg/pkg"
         working-directory: src/yao-pkg
         run: npm install --cache "$NPM_CACHE" "@yao-pkg/pkg@$YAO_PKG_VER"
 
-      # ------------------------------------------------------------------  #
-      #  6. Verify the cache is self-sufficient (offline smoke-test)        #
-      #     Re-run every install with --prefer-offline against the cache    #
-      #     we just built.  Any miss is a hard error.                       #
-      #     Native packages are smoke-tested with --ignore-scripts only,    #
-      #     consistent with how the cache was populated.                    #
-      # ------------------------------------------------------------------  #
-      - name: Smoke-test cache offline — web-apps/build
+      # Offline smoke-tests — any cache miss is a hard failure
+      - name: "Smoke-test: web-apps/build"
         working-directory: src/web-apps/build
         run: |
           rm -rf node_modules
-          npm install --prefer-offline --cache "$NPM_CACHE" patch-package
-          npm install --prefer-offline --cache "$NPM_CACHE" --ignore-scripts optipng-bin@5.1.0
+          npm install --offline --cache "$NPM_CACHE" patch-package
+          npm install --offline --cache "$NPM_CACHE" --ignore-scripts optipng-bin@5.1.0
 
-      - name: Smoke-test cache offline — server
+      - name: "Smoke-test: server"
         working-directory: src/server
         run: |
           rm -rf node_modules
-          npm install --prefer-offline --cache "$NPM_CACHE" grunt-cli
-          npm install --prefer-offline --cache "$NPM_CACHE" grunt
+          npm install --offline --cache "$NPM_CACHE" grunt-cli
+          npm install --offline --cache "$NPM_CACHE" grunt
 
-      - name: Smoke-test cache offline — server/DocService
+      - name: "Smoke-test: server/DocService"
         working-directory: src/server/DocService
         run: |
           rm -rf node_modules
-          npm install --prefer-offline --cache "$NPM_CACHE" --ignore-scripts "sharp@$SHARP_VER"
-          npm install --prefer-offline --cache "$NPM_CACHE" patch-package
+          npm install --offline --cache "$NPM_CACHE" --ignore-scripts "sharp@$SHARP_VER"
+          npm install --offline --cache "$NPM_CACHE" patch-package
 
-      - name: Smoke-test cache offline — server/Metrics
+      - name: "Smoke-test: server/Metrics"
         working-directory: src/server/Metrics
         run: |
           rm -rf node_modules
-          npm install --prefer-offline --cache "$NPM_CACHE" --ignore-scripts "modern-syslog@$SYSLOG_VER"
-          npm install --prefer-offline --cache "$NPM_CACHE" patch-package
+          npm install --offline --cache "$NPM_CACHE" --ignore-scripts "modern-syslog@$SYSLOG_VER"
+          npm install --offline --cache "$NPM_CACHE" patch-package
 
-      - name: Smoke-test cache offline — sdkjs
+      - name: "Smoke-test: sdkjs"
         working-directory: src/sdkjs
         run: |
           rm -rf node_modules
-          npm install --prefer-offline --cache "$NPM_CACHE" grunt-cli
-          npm install --prefer-offline --cache "$NPM_CACHE" grunt
+          npm install --offline --cache "$NPM_CACHE" grunt-cli
+          npm install --offline --cache "$NPM_CACHE" grunt
 
-      - name: Smoke-test cache offline — yao-pkg
+      - name: "Smoke-test: yao-pkg"
         working-directory: src/yao-pkg
         run: |
           rm -rf node_modules
-          npm install --prefer-offline --cache "$NPM_CACHE" "@yao-pkg/pkg@$YAO_PKG_VER"
+          npm install --offline --cache "$NPM_CACHE" "@yao-pkg/pkg@$YAO_PKG_VER"
 
-      # ------------------------------------------------------------------ #
-      #  7. Clean up artefacts that must not live in the committed cache   #
-      #     Mirror what create-caches-tarball does in the port Makefile.   #
-      # ------------------------------------------------------------------ #
       - name: Clean transient cache artefacts
         run: |
-          rm -rf \
-            "$NPM_CACHE/_logs" \
-            "$NPM_CACHE/_update-notifier-last-checked"
+          rm -rf "$NPM_CACHE/_logs"
+          rm -rf "$NPM_CACHE/_update-notifier-last-checked"
 
-      # ------------------------------------------------------------------  #
-      #  8. Replace _cacache and yao-pkg manifests in this repo and commit  #
-      #                                                                     #
-      #  package.json and package-lock.json are committed here alongside    #
-      #  _cacache so the port Makefile can copy them from WRKSRC_npm_cache  #
-      #  instead of carrying them as static files/ entries.  This keeps     #
-      #  the lockfile and the cache guaranteed in sync.                     #
-      # ------------------------------------------------
-      - name: Replace _cacache and commit
+      - name: Commit and tag
         run: |
           DATE=$(date -u +%Y%m%d)
           NEW_TAG="${DS_TAG}-${DATE}"
 
-          # Replace the _cacache subtree" _cacache
+          rm -rf _cacache
+          cp -r "$NPM_CACHE/_cacache" _cacache
 
-          # Replace the yao-pkg manifests with the freshly resolved copies.
-          # package-lock.json is genera versions; package.json is the seed we created but
-          # npm may have normalised it, so capture both.
-          cp src/yaoo-pkg/package-lock.json yao-pkg-package-lock.json
+          cp src/yao-pkg/package.json      yao-pkg-package.json
+          cp src/yao-pkg/package-lock.json yao-pkg-package-lock.json
 
           git config user.name  "github-actions[bot]"
-          git config us     git add _cacache yao-pkg-package.json yao-pkg-package-lock.json
-          git commit -m "npm cache for OnlyOffice DS ${DS_TE_KEY + GPG_PASSPHRASE secrets) ---
-          # Uncomment the block below and remove the plain `git tag` line to
-          # getts.GPG_PRIVATE_KEY }}" | gpg --batch --import
-          # echo "${{ secrets.GPG_PASSPHRASE }}" | gpg --batch --passphrase-fd 0 \ # git tag -s "$NEW_TAG" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE})"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git tag "$NEW_TAG" -m "OnlyOffice DS ${DS_Tgs
+          git add _cacache yao-pkg-package.json yao-pkg-package-lock.json
+          git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE})"
 
-          echo ""
+          # To use signed tags instead, store your key in repository secrets as
+          # GPG_PRIVATE_KEY and GPG_PASSPHRASE, then replace the plain git tag
+          # line below with:
+          #
+          #   echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+          #   echo "${{ secrets.GPG_PASSPHRASE }}" | \
+          #     gpg --batch --passphrase-fd 0 --pinentry-mode loopback --quiet true
+          #   git tag -s "$NEW_TAG" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE})"
+
+          git tag "$NEW_TAG" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE})"
+          git push origin HEAD --tags
+
           echo "::notice::Committed and pushed tag: $NEW_TAG"
-          echo "::notice::Update your port Gfice-DS-npm-cache:${NEW_TAG}:npm_cache"
+          echo "::notice::Update your port GH_TUPLE line to:"
+          echo "::notice::  fsbruva:onlyoffice-DS-npm-cache:${NEW_TAG}:npm_cache"
