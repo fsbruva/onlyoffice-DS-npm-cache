@@ -210,7 +210,7 @@ jobs:
       - name: Commit and tag
         run: |
           DATE=$(date -u +%Y%m%d)
-          NEW_TAG="${DS_TAG}-${DATE}"
+          NEW_TAG="${DS_TAG}-${DATE}_2"
 
           rm -rf _cacache
           cp -r "$NPM_CACHE/_cacache" _cacache
