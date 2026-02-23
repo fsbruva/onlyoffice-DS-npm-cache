@@ -4,17 +4,21 @@
 # offline poudriere builds. The resulting commit is tagged with the
 # same scheme used in the port's GH_TUPLE, e.g. v9.1.0.177-20250223.
 #
-# Workflow inputs let you override every version variable so the same
-# file works for future releases without editing.
-#
-# Required repository secret:  none (uses the built-in GITHUB_TOKEN).
-# Optional repository secret:  GPG_PRIVATE_KEY + GPG_PASSPHRASE if you
-#   want signed tags (see the "Sign tag" step comments).
-#
 # NOTE: workflow_dispatch only fires from the repository's default branch.
 # Merge this file to your default branch before attempting to trigger it.
 #
-# IMPORTANT - why --ignore-scripts is used for native packages:
+# WHY bare "npm install" runs appear before the specific installs:
+#   Each cloned repo directory (server, DocService, Metrics, sdkjs,
+#   web-apps/build) already has its own package.json listing many
+#   dependencies. When the port runs "npm install grunt-cli" inside
+#   server/, npm resolves the ENTIRE dependency tree — including every
+#   package already declared in package.json — and expects them all to
+#   be in the cache. If they are not, the offline build fails with
+#   ENOTCACHED. The bare "npm install" here ensures the full existing
+#   tree is fetched and cached before we layer on the port's specific
+#   installs.
+#
+# WHY --ignore-scripts is used for native packages:
 #   sharp, modern-syslog, and optipng-bin all have postinstall scripts
 #   that either compile a native addon or download a prebuilt binary.
 #   Running those on the Ubuntu runner would deposit Linux ELF binaries
@@ -60,12 +64,12 @@ jobs:
       contents: write
 
     env:
-      DS_TAG: "v${{ github.event.inputs.ds_version }}.${{ github.event.inputs.ds_build }}"
-      NODE_VER: "${{ github.event.inputs.node_version }}"
-      SHARP_VER: "${{ github.event.inputs.sharp_ver }}"
-      SYSLOG_VER: "${{ github.event.inputs.modern_syslog_ver }}"
+      DS_TAG:      "v${{ github.event.inputs.ds_version }}.${{ github.event.inputs.ds_build }}"
+      NODE_VER:    "${{ github.event.inputs.node_version }}"
+      SHARP_VER:   "${{ github.event.inputs.sharp_ver }}"
+      SYSLOG_VER:  "${{ github.event.inputs.modern_syslog_ver }}"
       YAO_PKG_VER: "${{ github.event.inputs.yao_pkg_ver }}"
-      NPM_CACHE: "${{ github.workspace }}/npm-cache"
+      NPM_CACHE:   "${{ github.workspace }}/npm-cache"
 
     steps:
       - name: Checkout npm-cache repo
@@ -73,147 +77,214 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Node.js ${{ env.NODE_VER }}
+      - name: Set up Node.js ${{ github.event.inputs.node_version }}
         uses: actions/setup-node@v4
         with:
           node-version: "${{ env.NODE_VER }}"
 
-      - name: Clone ONLYOFFICE/web-apps
+      # The ONLYOFFICE repos are tagged by release, not branched.
+      # git clone accepts tag names via --branch; --single-branch keeps
+      # the clone shallow so we don't fetch the entire repository history.
+      - name: Clone ONLYOFFICE/web-apps at tag ${{ env.DS_TAG }}
         run: |
-          git clone --depth 1 --branch "$DS_TAG" \
+          git clone \
+            --depth 1 \
+            --branch "${{ env.DS_TAG }}" \
+            --single-branch \
             https://github.com/ONLYOFFICE/web-apps.git \
             src/web-apps
 
-      - name: Clone ONLYOFFICE/server
+      - name: Clone ONLYOFFICE/server at tag ${{ env.DS_TAG }}
         run: |
-          git clone --depth 1 --branch "$DS_TAG" \
+          git clone \
+            --depth 1 \
+            --branch "${{ env.DS_TAG }}" \
+            --single-branch \
             https://github.com/ONLYOFFICE/server.git \
             src/server
 
-      - name: Clone ONLYOFFICE/sdkjs
+      - name: Clone ONLYOFFICE/sdkjs at tag ${{ env.DS_TAG }}
         run: |
-          git clone --depth 1 --branch "$DS_TAG" \
+          git clone \
+            --depth 1 \
+            --branch "${{ env.DS_TAG }}" \
+            --single-branch \
             https://github.com/ONLYOFFICE/sdkjs.git \
             src/sdkjs
+
+      - name: Verify cloned tags
+        run: |
+          echo "=== web-apps ===" && git -C src/web-apps describe --tags
+          echo "=== server    ===" && git -C src/server  describe --tags
+          echo "=== sdkjs     ===" && git -C src/sdkjs   describe --tags
 
       - name: Create yao-pkg workspace
         run: |
           mkdir -p src/yao-pkg
-          cat > src/yao-pkg/package.json << EOF
+          cat > src/yao-pkg/package.json << 'EOF'
           {
             "name": "yao-pkg-cache-seed",
             "version": "1.0.0",
             "private": true,
-            "dependencies": {
-              "@yao-pkg/pkg": "$YAO_PKG_VER"
-            }
+            "dependencies": {}
           }
           EOF
 
-      # web-apps/build
+      # ------------------------------------------------------------------ #
+      #  Populate the cache                                                  #
+      #                                                                      #
+      #  For each directory the port builds in, we run two phases:          #
+      #  1. Bare "npm install" (no args) — caches everything already        #
+      #     declared in the directory's own package.json. This is critical  #
+      #     because the port's specific installs (grunt-cli, grunt, etc.)   #
+      #     are added into an existing package.json context, so npm         #
+      #     resolves and expects the full pre-existing tree to be cached.   #
+      #  2. The specific "npm install <pkg>" calls the port Makefile makes. #
+      # ------------------------------------------------------------------ #
+
+      # -- web-apps/build --------------------------------------------------
+      - name: "web-apps/build: npm install (cache existing package.json deps)"
+        working-directory: src/web-apps/build
+        run: npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts
+
       - name: "web-apps/build: npm install patch-package"
         working-directory: src/web-apps/build
-        run: npm install --cache "$NPM_CACHE" patch-package
+        run: npm install --cache "${{ env.NPM_CACHE }}" patch-package
 
       - name: "web-apps/build: npm install optipng-bin@5.1.0 (ignore-scripts)"
         working-directory: src/web-apps/build
-        run: npm install --cache "$NPM_CACHE" --ignore-scripts optipng-bin@5.1.0
+        run: npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts optipng-bin@5.1.0
 
-      # server
+      # -- server ----------------------------------------------------------
+      - name: "server: npm install (cache existing package.json deps)"
+        working-directory: src/server
+        run: npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts
+
       - name: "server: npm install grunt-cli"
         working-directory: src/server
-        run: npm install --cache "$NPM_CACHE" grunt-cli
+        run: npm install --cache "${{ env.NPM_CACHE }}" grunt-cli
 
       - name: "server: npm install grunt"
         working-directory: src/server
-        run: npm install --cache "$NPM_CACHE" grunt
+        run: npm install --cache "${{ env.NPM_CACHE }}" grunt
 
-      # server/DocService
-      - name: "DocService: npm install sharp (ignore-scripts)"
+      # -- server/DocService -----------------------------------------------
+      - name: "DocService: npm install (cache existing package.json deps)"
         working-directory: src/server/DocService
-        run: npm install --cache "$NPM_CACHE" --ignore-scripts "sharp@$SHARP_VER"
+        run: npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts
+
+      - name: "DocService: npm install sharp@${{ env.SHARP_VER }} (ignore-scripts)"
+        working-directory: src/server/DocService
+        run: npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts "sharp@${{ env.SHARP_VER }}"
 
       - name: "DocService: npm install patch-package"
         working-directory: src/server/DocService
-        run: npm install --cache "$NPM_CACHE" patch-package
+        run: npm install --cache "${{ env.NPM_CACHE }}" patch-package
 
-      # server/Metrics
-      - name: "Metrics: npm install modern-syslog (ignore-scripts)"
+      # -- server/Metrics --------------------------------------------------
+      - name: "Metrics: npm install (cache existing package.json deps)"
         working-directory: src/server/Metrics
-        run: npm install --cache "$NPM_CACHE" --ignore-scripts "modern-syslog@$SYSLOG_VER"
+        run: npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts
+
+      - name: "Metrics: npm install modern-syslog@${{ env.SYSLOG_VER }} (ignore-scripts)"
+        working-directory: src/server/Metrics
+        run: npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts "modern-syslog@${{ env.SYSLOG_VER }}"
 
       - name: "Metrics: npm install patch-package"
         working-directory: src/server/Metrics
-        run: npm install --cache "$NPM_CACHE" patch-package
+        run: npm install --cache "${{ env.NPM_CACHE }}" patch-package
 
-      # sdkjs
+      # -- sdkjs -----------------------------------------------------------
+      - name: "sdkjs: npm install (cache existing package.json deps)"
+        working-directory: src/sdkjs
+        run: npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts
+
       - name: "sdkjs: npm install grunt-cli"
         working-directory: src/sdkjs
-        run: npm install --cache "$NPM_CACHE" grunt-cli
+        run: npm install --cache "${{ env.NPM_CACHE }}" grunt-cli
 
       - name: "sdkjs: npm install grunt"
         working-directory: src/sdkjs
-        run: npm install --cache "$NPM_CACHE" grunt
+        run: npm install --cache "${{ env.NPM_CACHE }}" grunt
 
-      # yao-pkg
-      - name: "yao-pkg: npm install @yao-pkg/pkg"
+      # -- yao-pkg ---------------------------------------------------------
+      - name: "yao-pkg: npm install @yao-pkg/pkg@${{ env.YAO_PKG_VER }}"
         working-directory: src/yao-pkg
-        run: npm install --cache "$NPM_CACHE" "@yao-pkg/pkg@$YAO_PKG_VER"
+        run: npm install --cache "${{ env.NPM_CACHE }}" "@yao-pkg/pkg@${{ env.YAO_PKG_VER }}"
 
-      # Offline smoke-tests — any cache miss is a hard failure
+      # Verify the cache directory was actually populated
+      - name: Verify cache was populated
+        run: |
+          echo "Cache location: ${{ env.NPM_CACHE }}"
+          echo "--- _cacache entry count ---"
+          find "${{ env.NPM_CACHE }}/_cacache" -type f | wc -l
+          echo "--- _cacache size ---"
+          du -sh "${{ env.NPM_CACHE }}/_cacache"
+
+      # ------------------------------------------------------------------ #
+      #  Offline smoke-tests                                                 #
+      #  Re-run every install with --offline. Any cache miss is a hard      #
+      #  failure, matching exactly what the poudriere jail will encounter.  #
+      # ------------------------------------------------------------------ #
+
       - name: "Smoke-test: web-apps/build"
         working-directory: src/web-apps/build
         run: |
           rm -rf node_modules
-          npm install --offline --cache "$NPM_CACHE" patch-package
-          npm install --offline --cache "$NPM_CACHE" --ignore-scripts optipng-bin@5.1.0
+          npm install --offline --cache "${{ env.NPM_CACHE }}" --ignore-scripts
+          npm install --offline --cache "${{ env.NPM_CACHE }}" patch-package
+          npm install --offline --cache "${{ env.NPM_CACHE }}" --ignore-scripts optipng-bin@5.1.0
 
       - name: "Smoke-test: server"
         working-directory: src/server
         run: |
           rm -rf node_modules
-          npm install --offline --cache "$NPM_CACHE" grunt-cli
-          npm install --offline --cache "$NPM_CACHE" grunt
+          npm install --offline --cache "${{ env.NPM_CACHE }}" --ignore-scripts
+          npm install --offline --cache "${{ env.NPM_CACHE }}" grunt-cli
+          npm install --offline --cache "${{ env.NPM_CACHE }}" grunt
 
       - name: "Smoke-test: server/DocService"
         working-directory: src/server/DocService
         run: |
           rm -rf node_modules
-          npm install --offline --cache "$NPM_CACHE" --ignore-scripts "sharp@$SHARP_VER"
-          npm install --offline --cache "$NPM_CACHE" patch-package
+          npm install --offline --cache "${{ env.NPM_CACHE }}" --ignore-scripts
+          npm install --offline --cache "${{ env.NPM_CACHE }}" --ignore-scripts "sharp@${{ env.SHARP_VER }}"
+          npm install --offline --cache "${{ env.NPM_CACHE }}" patch-package
 
       - name: "Smoke-test: server/Metrics"
         working-directory: src/server/Metrics
         run: |
           rm -rf node_modules
-          npm install --offline --cache "$NPM_CACHE" --ignore-scripts "modern-syslog@$SYSLOG_VER"
-          npm install --offline --cache "$NPM_CACHE" patch-package
+          npm install --offline --cache "${{ env.NPM_CACHE }}" --ignore-scripts
+          npm install --offline --cache "${{ env.NPM_CACHE }}" --ignore-scripts "modern-syslog@${{ env.SYSLOG_VER }}"
+          npm install --offline --cache "${{ env.NPM_CACHE }}" patch-package
 
       - name: "Smoke-test: sdkjs"
         working-directory: src/sdkjs
         run: |
           rm -rf node_modules
-          npm install --offline --cache "$NPM_CACHE" grunt-cli
-          npm install --offline --cache "$NPM_CACHE" grunt
+          npm install --offline --cache "${{ env.NPM_CACHE }}" --ignore-scripts
+          npm install --offline --cache "${{ env.NPM_CACHE }}" grunt-cli
+          npm install --offline --cache "${{ env.NPM_CACHE }}" grunt
 
       - name: "Smoke-test: yao-pkg"
         working-directory: src/yao-pkg
         run: |
           rm -rf node_modules
-          npm install --offline --cache "$NPM_CACHE" "@yao-pkg/pkg@$YAO_PKG_VER"
+          npm install --offline --cache "${{ env.NPM_CACHE }}" "@yao-pkg/pkg@${{ env.YAO_PKG_VER }}"
 
       - name: Clean transient cache artefacts
         run: |
-          rm -rf "$NPM_CACHE/_logs"
-          rm -rf "$NPM_CACHE/_update-notifier-last-checked"
+          rm -rf "${{ env.NPM_CACHE }}/_logs"
+          rm -rf "${{ env.NPM_CACHE }}/_update-notifier-last-checked"
 
       - name: Commit and tag
         run: |
           DATE=$(date -u +%Y%m%d)
-          NEW_TAG="${DS_TAG}-${DATE}_2"
+          NEW_TAG="${{ env.DS_TAG }}-${DATE}_2"
 
           rm -rf _cacache
-          cp -r "$NPM_CACHE/_cacache" _cacache
+          cp -r "${{ env.NPM_CACHE }}/_cacache" _cacache
 
           cp src/yao-pkg/package.json      yao-pkg-package.json
           cp src/yao-pkg/package-lock.json yao-pkg-package-lock.json
@@ -222,18 +293,18 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add _cacache yao-pkg-package.json yao-pkg-package-lock.json
-          git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE})"
+          git commit -m "npm cache for OnlyOffice DS ${{ env.DS_TAG }} (${DATE})"
 
-          # To use signed tags instead, store your key in repository secrets as
-          # GPG_PRIVATE_KEY and GPG_PASSPHRASE, then replace the plain git tag
-          # line below with:
+          # To use signed tags, store your key in repository secrets as
+          # GPG_PRIVATE_KEY and GPG_PASSPHRASE, then replace the plain
+          # git tag line below with:
           #
           #   echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
           #   echo "${{ secrets.GPG_PASSPHRASE }}" | \
           #     gpg --batch --passphrase-fd 0 --pinentry-mode loopback --quiet true
-          #   git tag -s "$NEW_TAG" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE})"
+          #   git tag -s "$NEW_TAG" -m "OnlyOffice DS ${{ env.DS_TAG }} npm cache (${DATE})"
 
-          git tag "$NEW_TAG" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE})"
+          git tag "$NEW_TAG" -m "OnlyOffice DS ${{ env.DS_TAG }} npm cache (${DATE})"
           git push origin HEAD --tags
 
           echo "::notice::Committed and pushed tag: $NEW_TAG"
