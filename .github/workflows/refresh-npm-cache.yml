@@ -260,6 +260,7 @@ jobs:
       #  instead of carrying them as static files/ entries.  This keeps     #
       #  the lockfile and the cache guaranteed in sync.                     #
       # ------------------------------------------------
+      - name: Replace _cacache and commit
         run: |
           DATE=$(date -u +%Y%m%d)
           NEW_TAG="${DS_TAG}-${DATE}"
