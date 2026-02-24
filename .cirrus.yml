@@ -132,7 +132,7 @@ build_npm_cache_task:
   #  Without this, npm reads resolved URLs from the lockfile and never #
   #  fetches packuments, causing ENOTCACHED on offline builds.         #
   # ------------------------------------------------------------------ #
-populate_existing_deps_script:
+  populate_existing_deps_script:
     - echo "--- Phase 1: caching existing package.json trees ---"
     # Delete package-lock.json files to force registry resolution
     - rm -f src/web-apps/build/package-lock.json
