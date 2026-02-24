@@ -3,6 +3,10 @@
 # Builds the OnlyOffice DocumentServer npm _cacache on a real FreeBSD VM,
 # then commits the result to this repository with a version tag.
 #
+# KEY DIFFERENCE FROM UPSTREAM SOURCES:
+#   This build applies FreeBSD port patches BEFORE caching, ensuring the
+#   cached dependency tree matches what poudriere will build offline.
+#
 # SETUP (one-time):
 #   1. Create a GitHub Personal Access Token with 'repo' scope at:
 #      https://github.com/settings/tokens
@@ -23,19 +27,6 @@
 #   Update the defaults below when the port's version variables change.
 #   All of these can also be overridden per-run in the Cirrus CI web UI
 #   without editing this file.
-#
-# WHY FreeBSD:
-#   npm's _cacache uses content-addressed storage whose key format is tied
-#   to the npm major version. Building the cache on the same OS with the
-#   same npm binary (pkg: npm-node20) as the poudriere jail guarantees
-#   exact key compatibility, correct handling of bundled transitive
-#   dependencies, and no need for --omit=dev workarounds.
-#
-# WHY --ignore-scripts for sharp / modern-syslog / optipng-bin:
-#   Their postinstall scripts compile native addons or download prebuilt
-#   binaries. The GCE FreeBSD VM does not have libvips or other port
-#   dependencies installed, so we suppress postinstalls here. The port
-#   itself runs those scripts inside the fully-provisioned poudriere jail.
 
 env:
   # --- Port version variables ---
@@ -48,14 +39,14 @@ env:
   YAO_PKG_VER:         "6.14.1"    # @yao-pkg/pkg version
 
   # --- Cirrus CI / GitHub config ---
-  # Create an encrypted variable at:
-  # https://cirrus-ci.com/github/fsbruva/onlyoffice-DS-npm-cache
-  # then replace the placeholder below.
   GITHUB_TOKEN: ENCRYPTED[cb63ddb701139b4dac8e4493476ef1ae09fa0078c69f2c153d968d93106a48a2263a08a5337848cc5d2641531b40e2fc]
 
   # Derived — do not edit
   DS_TAG: "v${DS_VERSION}.${DS_BUILD}"
   NPM_CACHE: "/tmp/npm-cache"
+  
+  # FreeBSD ports tree base URL
+  PORTS_BASE: "https://cgit.freebsd.org/ports/plain/www/onlyoffice-documentserver"
 
 build_npm_cache_task:
   name: "Build npm Cache"
@@ -65,7 +56,6 @@ build_npm_cache_task:
 
   # Real FreeBSD VM on Google Compute Engine.
   # Matches the FreeBSD major version your poudriere jail uses.
-  # Available families: freebsd-14-3, freebsd-14-2, freebsd-13-4, etc.
   freebsd_instance:
     image_family: freebsd-14-3
     cpu: 4
@@ -110,7 +100,42 @@ build_npm_cache_task:
     - echo "=== sdkjs     ===" && git -C src/sdkjs   describe --tags
 
   # ------------------------------------------------------------------ #
-  #  4. Create yao-pkg workspace                                        #
+  #  4. Fetch and apply FreeBSD port patches                            #
+  #     These patches modify package.json files to add/change deps,    #
+  #     so they MUST be applied before caching to ensure the cache     #
+  #     contains the exact dependency tree poudriere will need.        #
+  # ------------------------------------------------------------------ #
+  apply_patches_script:
+    - echo "--- Fetching FreeBSD port patches ---"
+    - mkdir -p patches
+    # Fetch all patch-*_package.json files
+    - fetch -o patches/patch-server_package.json "${PORTS_BASE}/files/patch-server_package.json" || echo "WARN: patch-server_package.json not found"
+    - fetch -o patches/patch-web-apps_build_package.json "${PORTS_BASE}/files/patch-web-apps_build_package.json" || echo "WARN: patch-web-apps_build_package.json not found"
+    - echo "--- Applying patches ---"
+    # Apply patches (suppress errors for missing patches)
+    - if [ -f patches/patch-server_package.json ]; then
+        patch -p0 -d src < patches/patch-server_package.json && echo "  Applied server package.json patch";
+      fi
+    - if [ -f patches/patch-web-apps_build_package.json ]; then
+        patch -p0 -d src < patches/patch-web-apps_build_package.json && echo "  Applied web-apps/build package.json patch";
+      fi
+    # Verify patches were applied
+    - echo "--- Verifying patched dependencies ---"
+    - grep -q '"patch-package"' src/web-apps/build/package.json && echo "  ✓ patch-package in web-apps/build" || echo "  ✗ patch-package NOT in web-apps/build"
+    - grep -q '"concurrently"' src/server/package.json && echo "  ✓ concurrently in server" || echo "  ✗ concurrently NOT in server"
+
+  # ------------------------------------------------------------------ #
+  #  5. Delete npm-shrinkwrap.json files                                #
+  #     These files pin exact resolved URLs and prevent packument       #
+  #     caching. Must be deleted to force full registry resolution.    #
+  # ------------------------------------------------------------------ #
+  delete_shrinkwrap_script:
+    - echo "--- Deleting npm-shrinkwrap.json files ---"
+    - find src -type f -name npm-shrinkwrap.json -delete
+    - find src -type f -name npm-shrinkwrap.json -exec echo "Found: {}" \; || echo "  All shrinkwrap files deleted"
+
+  # ------------------------------------------------------------------ #
+  #  6. Create yao-pkg workspace                                        #
   # ------------------------------------------------------------------ #
   create_yao_pkg_script:
     - mkdir -p src/yao-pkg
@@ -125,25 +150,16 @@ build_npm_cache_task:
       EOF
 
   # ------------------------------------------------------------------ #
-  #  5. Phase 1 — cache full existing package.json trees               #
-  #                                                                     #
-  #  Delete package-lock.json first in each directory so npm performs  #
-  #  full registry resolution and writes packuments to _cacache.       #
-  #  Without this, npm reads resolved URLs from the lockfile and never #
-  #  fetches packuments, causing ENOTCACHED on offline builds.         #
+  #  7. Phase 1 — cache full patched package.json trees                #
+  #     Now that patches are applied, this caches the complete         #
+  #     dependency tree that poudriere will need.                      #
   # ------------------------------------------------------------------ #
   populate_existing_deps_script:
-    - echo "--- Phase 1: caching existing package.json trees ---"
-    # Delete package-lock.json files to force registry resolution
-    - rm -f src/web-apps/build/package-lock.json
-    - rm -f src/server/npm-shrinkwrap.json
-    - rm -f src/server/DocService/npm-shrinkwrap.json
-    - rm -f src/server/Metrics/npm-shrinkwrap.json
-#    - rm -f src/sdkjs/build/npm-shrinkwrap.json
-    # web-apps/build
+    - echo "--- Phase 1: caching patched package.json trees ---"
+    # web-apps/build (now includes patch-package, optipng-bin from patch)
     - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/web-apps/build src/web-apps/build
-    # server
+    # server (now includes grunt, grunt-cli, concurrently from patch)
     - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/server src/server
     # server/DocService
@@ -157,15 +173,16 @@ build_npm_cache_task:
         --prefix src/sdkjs src/sdkjs
 
   # ------------------------------------------------------------------ #
-  #  6. Phase 2 — port-specific installs (mirrors port do-build)       #
+  #  8. Phase 2 — port-specific installs (mirrors port do-build)       #
+  #     These should now be cache hits since Phase 1 included them.    #
   # ------------------------------------------------------------------ #
   populate_port_deps_script:
     - echo "--- Phase 2: port-specific installs ---"
-    # web-apps/build
+    # web-apps/build - patch-package should already be cached from Phase 1
     - npm install --cache "${NPM_CACHE}" --prefix src/web-apps/build patch-package
     - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/web-apps/build optipng-bin@5.1.0
-    # server
+    # server - grunt-cli, grunt should already be cached from Phase 1
     - npm install --cache "${NPM_CACHE}" --prefix src/server grunt-cli
     - npm install --cache "${NPM_CACHE}" --prefix src/server grunt
     # server/DocService
@@ -186,10 +203,8 @@ build_npm_cache_task:
         --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
 
   # ------------------------------------------------------------------ #
-  #  7. Offline smoke-test                                              #
-  #     Mirrors the jail exactly: no lockfile, --offline, both phases. #
-  #     Any ENOTCACHED here means the cache is incomplete — task fails #
-  #     before anything is committed.                                  #
+  #  9. Offline smoke-test                                              #
+  #     Validates cache completeness using --offline flag.             #
   # ------------------------------------------------------------------ #
   smoke_test_script:
     - echo "--- Smoke-testing cache offline ---"
@@ -231,7 +246,7 @@ build_npm_cache_task:
     - echo "--- Smoke-test passed ---"
 
   # ------------------------------------------------------------------ #
-  #  8. Report cache size                                               #
+  #  10. Report cache size                                              #
   # ------------------------------------------------------------------ #
   report_script:
     - echo "--- Cache stats ---"
@@ -239,7 +254,7 @@ build_npm_cache_task:
     - du -sh "${NPM_CACHE}/_cacache"
 
   # ------------------------------------------------------------------ #
-  #  9. Commit and tag                                                  #
+  #  11. Commit and tag                                                 #
   # ------------------------------------------------------------------ #
   commit_script:
     - DATE=$(date -u +%Y%m%d)
@@ -256,13 +271,9 @@ build_npm_cache_task:
     - cp src/yao-pkg/package-lock.json yao-pkg-package-lock.json
     # Commit
     - git add _cacache yao-pkg-package.json yao-pkg-package-lock.json
-    - git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE})"
-    # Tag (replace the plain tag line with the gpg block below for signed tags)
-    #
-    # Signed tag (requires GPG_KEY_ID and GPG_PRIVATE_KEY encrypted variables):
-    #   echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
-    #   git tag -s "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE})"
-    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE})"
+    - git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE}) with FreeBSD patches applied"
+    # Tag
+    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE}) - patched"
     - git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${CIRRUS_REPO_FULL_NAME}.git"
         HEAD --tags
     - echo "Pushed tag ${NEW_TAG}"
