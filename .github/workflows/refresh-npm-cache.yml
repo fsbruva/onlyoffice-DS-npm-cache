@@ -166,25 +166,25 @@ jobs:
       - name: "server: cache full package.json tree"
         working-directory: src/server
         run: |
-          rm -f package-lock.json
+          rm -f npm-shrinkwrap.json
           npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts
 
       - name: "server/DocService: cache full package.json tree"
         working-directory: src/server/DocService
         run: |
-          rm -f package-lock.json
+          rm -f npm-shrinkwrap.json
           npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts
 
       - name: "server/Metrics: cache full package.json tree"
         working-directory: src/server/Metrics
         run: |
-          rm -f package-lock.json
+          rm -f npm-shrinkwrap.json
           npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts
 
       - name: "sdkjs: cache full package.json tree"
         working-directory: src/sdkjs
         run: |
-          rm -f package-lock.json
+          rm -f build/npm-shrinkwrap.json
           npm install --cache "${{ env.NPM_CACHE }}" --ignore-scripts
 
       # ------------------------------------------------------------------ #
@@ -302,7 +302,7 @@ jobs:
       - name: Commit and tag
         run: |
           DATE=$(date -u +%Y%m%d)
-          NEW_TAG="${{ env.DS_TAG }}-${DATE}"
+          NEW_TAG="${{ env.DS_TAG }}-${DATE}_GHA"
 
           rm -rf _cacache
           cp -r "${{ env.NPM_CACHE }}/_cacache" _cacache
