@@ -3,70 +3,41 @@
 # Builds the OnlyOffice DocumentServer npm _cacache on a real FreeBSD VM,
 # then commits the result to this repository with a version tag.
 #
-# KEY DIFFERENCE FROM UPSTREAM SOURCES:
-#   This build applies FreeBSD port patches BEFORE caching, ensuring the
-#   cached dependency tree matches what poudriere will build offline.
-#
-# SETUP (one-time):
-#   1. Create a GitHub Personal Access Token with 'repo' scope at:
-#      https://github.com/settings/tokens
-#   2. Store it as an encrypted variable named GITHUB_TOKEN in the Cirrus CI
-#      repository settings at:
-#      https://cirrus-ci.com/github/fsbruva/onlyoffice-DS-npm-cache
-#   3. Replace the ENCRYPTED[...] placeholder below with the value Cirrus
-#      gives you after encrypting the token.
-#
-# TRIGGERING:
-#   - Go to https://cirrus-ci.com/github/fsbruva/onlyoffice-DS-npm-cache
-#   - Find the "Build npm Cache" task and click the manual trigger button.
-#   - To override version variables for a new release, set them temporarily
-#     in the repository's environment variable overrides in the Cirrus CI UI
-#     before triggering.
-#
-# VERSION VARIABLES:
-#   Update the defaults below when the port's version variables change.
-#   All of these can also be overridden per-run in the Cirrus CI web UI
-#   without editing this file.
+# DYNAMIC DEPENDENCY DISCOVERY:
+#   Automatically finds and caches ALL npm dependencies in the source tree,
+#   not just the ones explicitly mentioned in the port Makefile.
 
 env:
   # --- Port version variables ---
-  # Keep these in sync with the port Makefile.
   DS_VERSION:          "9.2.1"
   DS_BUILD:            "8"
-  NODE_VERSION:        "20.20.0"   # PKGFETCH_NODE_VERSION
-  SHARP_VER:           "0.32.6"    # DS_SHARP_VER
-  MODERN_SYSLOG_VER:   "1.2.0"    # DS_MODERN_SYSLOG_VER
-  YAO_PKG_VER:         "6.14.1"    # @yao-pkg/pkg version
+  NODE_VERSION:        "20.20.0"
+  SHARP_VER:           "0.32.6"
+  MODERN_SYSLOG_VER:   "1.2.0"
+  YAO_PKG_VER:         "6.14.1"
 
   # --- Cirrus CI / GitHub config ---
   GITHUB_TOKEN: ENCRYPTED[cb63ddb701139b4dac8e4493476ef1ae09fa0078c69f2c153d968d93106a48a2263a08a5337848cc5d2641531b40e2fc]
 
-  # Derived — do not edit
+  # Derived
   DS_TAG: "v${DS_VERSION}.${DS_BUILD}"
   NPM_CACHE: "/tmp/npm-cache"
-  
-  # FreeBSD ports tree base URL
   PORTS_BASE: "https://cgit.freebsd.org/ports/plain/www/onlyoffice-documentserver"
 
 build_npm_cache_task:
   name: "Build npm Cache"
-
-  # Only trigger manually from the Cirrus CI web UI — never on push/PR.
   trigger_type: manual
 
-  # Real FreeBSD VM on Google Compute Engine.
-  # Matches the FreeBSD major version your poudriere jail uses.
   freebsd_instance:
     image_family: freebsd-14-3
     cpu: 4
     memory: 8GB
     disk: 50
 
-  # 60 minutes is ample; hard limit for free tier is 120 minutes.
   timeout_in: 60m
 
   # ------------------------------------------------------------------ #
-  #  1. Install dependencies                                           #
+  #  1. Install dependencies                                             #
   # ------------------------------------------------------------------ #
   install_script:
     - pkg install -y npm-node20 git
@@ -74,18 +45,17 @@ build_npm_cache_task:
     - npm --version
 
   # ------------------------------------------------------------------ #
-  #  2. Clone this repo (with credentials so we can push back later)   #
+  #  2. Clone this repo (with credentials)                              #
   # ------------------------------------------------------------------ #
   clone_script:
-    - git clone
-        --depth 1
+    - git clone --depth 1
         "https://x-access-token:${GITHUB_TOKEN}@github.com/${CIRRUS_REPO_FULL_NAME}.git"
         "${CIRRUS_WORKING_DIR}"
     - git config user.name  "cirrus-ci[bot]"
     - git config user.email "cirrus-ci[bot]@users.noreply.github.com"
 
   # ------------------------------------------------------------------ #
-  #  3. Clone ONLYOFFICE source repos at the release tag               #
+  #  3. Clone ONLYOFFICE source repos                                   #
   # ------------------------------------------------------------------ #
   clone_sources_script:
     - echo "Building cache for DS_TAG=${DS_TAG}"
@@ -100,42 +70,72 @@ build_npm_cache_task:
     - echo "=== sdkjs     ===" && git -C src/sdkjs   describe --tags
 
   # ------------------------------------------------------------------ #
-  #  4. Fetch and apply FreeBSD port patches                           #
-  #     These patches modify package.json files to add/change deps,    #
-  #     so they MUST be applied before caching to ensure the cache     #
-  #     contains the exact dependency tree poudriere will need.        #
+  #  4. Fetch and apply FreeBSD port patches                            #
   # ------------------------------------------------------------------ #
   apply_patches_script:
     - echo "--- Fetching FreeBSD port patches ---"
     - mkdir -p patches
-    # Fetch all patch-*_package.json files
-    - fetch -o patches/patch-server_package.json "${PORTS_BASE}/files/patch-server_package.json" || echo "WARN: patch-server_package.json not found"
-    - fetch -o patches/patch-web-apps_build_package.json "${PORTS_BASE}/files/patch-web-apps_build_package.json" || echo "WARN: patch-web-apps_build_package.json not found"
+    - fetch -o patches/patch-server_package.json "${PORTS_BASE}/files/patch-server_package.json" || echo "WARN: patch not found"
+    - fetch -o patches/patch-web-apps_build_package.json "${PORTS_BASE}/files/patch-web-apps_build_package.json" || echo "WARN: patch not found"
     - echo "--- Applying patches ---"
-    # Apply patches (suppress errors for missing patches)
     - if [ -f patches/patch-server_package.json ]; then
         patch -p0 -d src < patches/patch-server_package.json && echo "  Applied server package.json patch";
       fi
     - if [ -f patches/patch-web-apps_build_package.json ]; then
         patch -p0 -d src < patches/patch-web-apps_build_package.json && echo "  Applied web-apps/build package.json patch";
       fi
-    # Verify patches were applied
-    - echo "--- Verifying patched dependencies ---"
-    - grep -q '"patch-package"' src/web-apps/build/package.json && echo "  ✓ patch-package in web-apps/build" || echo "  ✗ patch-package NOT in web-apps/build"
-    - grep -q '"concurrently"' src/server/package.json && echo "  ✓ concurrently in server" || echo "  ✗ concurrently NOT in server"
+    - echo "--- Verifying patches ---"
+    - grep -q '"patch-package"' src/web-apps/build/package.json && echo "  ✓ patch-package" || echo "  ✗ patch-package"
+    - grep -q '"concurrently"' src/server/package.json && echo "  ✓ concurrently" || echo "  ✗ concurrently"
 
   # ------------------------------------------------------------------ #
-  #  5. Delete npm-shrinkwrap.json and package-lock.jston files        #
-  #     These files pin exact resolved URLs and prevent packument      #
-  #     caching. Must be deleted to force full registry resolution.    #
+  #  5. Delete lockfiles (shrinkwrap and package-lock)                  #
+  #     Dynamic approach: find and delete all, excluding certain paths #
   # ------------------------------------------------------------------ #
-  delete_shrinkwrap_script:
+  delete_lockfiles_script:
     - echo "--- Deleting npm-shrinkwrap.json and package-lock.json files ---"
-    - find src -type f -name npm-shrinkwrap.json -delete
-    - find src -type f -name package-lock.json -delete
+    - |
+      # Delete all shrinkwrap files
+      echo "  Shrinkwrap files:"
+      find src -type f -name npm-shrinkwrap.json -exec echo "    Deleting: {}" \; -delete
+
+      # Delete package-lock.json files, excluding v8 and other non-build paths
+      echo "  Package-lock files:"
+      find src -type f -name package-lock.json \
+        ! -path "*/v8_89/*" \
+        ! -path "*/document-server-integration/*" \
+        ! -path "*/document-server-package/*" \
+        -exec echo "    Deleting: {}" \; -delete
+
+    - echo "  Verification (should show nothing):"
+    - find src -type f \( -name npm-shrinkwrap.json -o -name package-lock.json \) \
+        ! -path "*/v8_89/*" || echo "    All lockfiles removed"
 
   # ------------------------------------------------------------------ #
-  #  6. Create yao-pkg workspace                                       #
+  #  6. Dynamically discover all npm package directories                #
+  #     Ensures we don't miss any dependencies                         #
+  # ------------------------------------------------------------------ #
+  discover_npm_dirs_script:
+    - echo "--- Discovering all npm package directories ---"
+    - |
+      # Find all package.json files, excluding paths we don't build:
+      # - v8_89: V8 engine internals (don't need npm deps)
+      # - document-server-integration: Just examples
+      # - document-server-package: Build output directory
+      # - onlyoffice.github.io: Handled separately as sdkjs-plugins
+
+      find src -type f -name package.json \
+        ! -path "*/v8_89/*" \
+        ! -path "*/document-server-integration/*" \
+        ! -path "*/document-server-package/*" \
+        ! -path "*/onlyoffice.github.io/*" \
+        -exec dirname {} \; | sort -u > /tmp/npm-dirs.txt
+
+      echo "  Found $(wc -l < /tmp/npm-dirs.txt) npm directories:"
+      cat /tmp/npm-dirs.txt | sed 's|^src/|    |'
+
+  # ------------------------------------------------------------------ #
+  #  7. Create yao-pkg workspace                                        #
   # ------------------------------------------------------------------ #
   create_yao_pkg_script:
     - mkdir -p src/yao-pkg
@@ -148,134 +148,212 @@ build_npm_cache_task:
         "dependencies": {}
       }
       EOF
+    - echo "src/yao-pkg" >> /tmp/npm-dirs.txt
 
   # ------------------------------------------------------------------ #
-  #  7. Phase 1 — cache full patched package.json trees                #
-  #     Now that patches are applied, this caches the complete         #
-  #     dependency tree that poudriere will need.                      #
+  #  8. Phase 1 — cache ALL discovered npm dependency trees            #
+  #     Processes every directory with a package.json file             #
   # ------------------------------------------------------------------ #
-  populate_existing_deps_script:
-    - echo "--- Phase 1: caching patched package.json trees ---"
-    # web-apps/build (now includes patch-package, optipng-bin from patch)
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts
-        --prefix src/web-apps/build src/web-apps/build
-    # server (now includes grunt, grunt-cli, concurrently from patch)
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts
-        --prefix src/server src/server
-    # server/DocService
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts
-        --prefix src/server/DocService src/server/DocService
-    # server/Metrics
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts
-        --prefix src/server/Metrics src/server/Metrics
-    # sdkjs
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts
-        --prefix src/sdkjs/build src/sdkjs/build
+  populate_all_deps_script:
+    - echo "--- Phase 1: caching all npm dependency trees ---"
+    - echo "  Processing $(wc -l < /tmp/npm-dirs.txt) directories..."
+    - |
+      SUCCESS_COUNT=0
+      FAIL_COUNT=0
+
+      while IFS= read -r npm_dir; do
+        if [ -f "${npm_dir}/package.json" ]; then
+          echo ""
+          echo "  [$(expr ${SUCCESS_COUNT} + ${FAIL_COUNT} + 1)/$(wc -l < /tmp/npm-dirs.txt)] ${npm_dir#src/}"
+
+          if npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix "${npm_dir}" "${npm_dir}" 2>&1 | grep -v "^npm warn"; then
+            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          else
+            echo "    ⚠ Warning: npm install failed, continuing..."
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+          fi
+        fi
+      done < /tmp/npm-dirs.txt
+
+      echo ""
+      echo "--- Phase 1 summary ---"
+      echo "  Success: ${SUCCESS_COUNT}"
+      echo "  Failures: ${FAIL_COUNT}"
+      echo "  Total: $(expr ${SUCCESS_COUNT} + ${FAIL_COUNT})"
 
   # ------------------------------------------------------------------ #
-  #  8. Phase 2 — port-specific installs (mirrors port do-build)       #
-  #     These should now be cache hits since Phase 1 included them.    #
+  #  9. Phase 2 — port-specific installs (explicit versions)           #
+  #     These may duplicate Phase 1, but ensure specific versions      #
   # ------------------------------------------------------------------ #
   populate_port_deps_script:
-    - echo "--- Phase 2: port-specific installs ---"
-    # web-apps/build - patch-package should already be cached from Phase 1
+    - echo "--- Phase 2: port-specific dependency versions ---"
+    # web-apps/build
+    - echo "  web-apps/build extras..."
     - npm install --cache "${NPM_CACHE}" --prefix src/web-apps/build patch-package
     - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/web-apps/build optipng-bin@5.1.0
-    # server - grunt-cli, grunt should already be cached from Phase 1
+    # server
+    - echo "  server extras..."
     - npm install --cache "${NPM_CACHE}" --prefix src/server grunt-cli
     - npm install --cache "${NPM_CACHE}" --prefix src/server grunt
     # server/DocService
+    - echo "  server/DocService extras..."
     - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/server/DocService "sharp@${SHARP_VER}"
     - npm install --cache "${NPM_CACHE}"
         --prefix src/server/DocService patch-package
     # server/Metrics
+    - echo "  server/Metrics extras..."
     - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/server/Metrics "modern-syslog@${MODERN_SYSLOG_VER}"
     - npm install --cache "${NPM_CACHE}"
         --prefix src/server/Metrics patch-package
-    # sdkjs
+    # sdkjs/build
+    - echo "  sdkjs extras..."
     - npm install --cache "${NPM_CACHE}" --prefix src/sdkjs grunt-cli
     - npm install --cache "${NPM_CACHE}" --prefix src/sdkjs grunt
     # yao-pkg
+    - echo "  yao-pkg..."
     - npm install --cache "${NPM_CACHE}"
         --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
 
   # ------------------------------------------------------------------ #
-  #  9. Offline smoke-test                                             #
-  #     Validates cache completeness using --offline flag.             #
+  #  10. Generate pkg-fetch FreeBSD node patches                        #
+  # ------------------------------------------------------------------ #
+  generate_pkg_fetch_patch_script:
+    - echo "--- Generating pkg-fetch FreeBSD node patch ---"
+    - mkdir -p /tmp/patch-workspace
+    - cd /tmp/patch-workspace
+
+    # Install dependencies
+    - npm install --cache "${NPM_CACHE}" patch-package
+    - npm install --cache "${NPM_CACHE}" "@yao-pkg/pkg@${YAO_PKG_VER}"
+
+    # Get pkg-fetch version
+    - PKG_FETCH_VERSION=$(cat node_modules/@yao-pkg/pkg/package.json | grep -A1 '"@yao-pkg/pkg-fetch"' | tail -1 | cut -d'"' -f4)
+    - echo "  pkg-fetch version: ${PKG_FETCH_VERSION}"
+
+    # Fetch FreeBSD node20 patches
+    - echo "  Fetching FreeBSD node20 patches..."
+    - mkdir -p freebsd-patches
+    - |
+      patch_list=$(fetch -qo - "https://cgit.freebsd.org/ports/tree/www/node20/files/" | grep -o 'patch-[^"]*\.patch' | sort -u)
+      patch_count=0
+      for patch_file in ${patch_list}; do
+        if fetch -o "freebsd-patches/${patch_file}" "https://cgit.freebsd.org/ports/plain/www/node20/files/${patch_file}" 2>/dev/null; then
+          patch_count=$((patch_count + 1))
+        fi
+      done
+      echo "  Downloaded ${patch_count} FreeBSD patches"
+
+    # Backup and modify pkg-fetch patch
+    - cd node_modules/@yao-pkg/pkg-fetch/patches
+    - cp "node.v${NODE_VERSION}.cpp.patch" "node.v${NODE_VERSION}.cpp.patch.orig"
+
+    # Append FreeBSD patches with modified paths
+    - echo "  Appending FreeBSD patches to pkg-fetch node patch..."
+    - |
+      for patch_file in /tmp/patch-workspace/freebsd-patches/patch-*; do
+        if [ -f "${patch_file}" ]; then
+          sed 's#^--- #--- node/#g; s#^+++ #+++ node/#g' "${patch_file}" >> "node.v${NODE_VERSION}.cpp.patch"
+        fi
+      done
+
+    # Generate patch-package diff
+    - cd /tmp/patch-workspace
+    - echo "  Generating patch-package diff..."
+    - npx patch-package "@yao-pkg/pkg-fetch"
+
+    # Process and save
+    - cd patches
+    - PATCH_FILE=$(ls @yao-pkg+pkg-fetch+*.patch 2>/dev/null | head -1)
+    - UPSTREAM_URL="https://github.com/yao-pkg/pkg-fetch/raw/v${PKG_FETCH_VERSION}/patches/node.v${NODE_VERSION}.cpp.patch"
+    - |
+      {
+        echo "${UPSTREAM_URL}"
+        echo "+ local FreeBSD patches"
+        grep -v '^diff --git' "${PATCH_FILE}" | \
+          sed 's#^--- a/node_modules#--- yao-pkg/node_modules#g; s#^+++ b/node_modules#+++ yao-pkg/node_modules#g'
+      } > "${CIRRUS_WORKING_DIR}/extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
+
+    # Verify
+    - cd "${CIRRUS_WORKING_DIR}"
+    - echo "--- Patch generated: $(wc -l < extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch) lines ---"
+
+  # ------------------------------------------------------------------ #
+  #  11. Offline smoke-test on ALL discovered directories               #
+  #      Validates cache completeness                                  #
   # ------------------------------------------------------------------ #
   smoke_test_script:
     - echo "--- Smoke-testing cache offline ---"
-    # web-apps/build
-    - npm install --offline --cache "${NPM_CACHE}"
-        --prefix src/web-apps/build src/web-apps/build
-    - npm install --offline --cache "${NPM_CACHE}"
-        --prefix src/web-apps/build patch-package
-    - npm install --offline --cache "${NPM_CACHE}" --ignore-scripts
-        --prefix src/web-apps/build optipng-bin@5.1.0
-    # server
-    - npm install --offline --cache "${NPM_CACHE}"
-        --prefix src/server src/server
-    - npm install --offline --cache "${NPM_CACHE}" --prefix src/server grunt-cli
-    - npm install --offline --cache "${NPM_CACHE}" --prefix src/server grunt
-    # server/DocService
-    - npm install --offline --cache "${NPM_CACHE}"
-        --prefix src/server/DocService src/server/DocService
-    - npm install --offline --cache "${NPM_CACHE}" --ignore-scripts
-        --prefix src/server/DocService "sharp@${SHARP_VER}"
-    - npm install --offline --cache "${NPM_CACHE}"
-        --prefix src/server/DocService patch-package
-    # server/Metrics
-    - npm install --offline --cache "${NPM_CACHE}"
-        --prefix src/server/Metrics src/server/Metrics
-    - npm install --offline --cache "${NPM_CACHE}" --ignore-scripts
-        --prefix src/server/Metrics "modern-syslog@${MODERN_SYSLOG_VER}"
-    - npm install --offline --cache "${NPM_CACHE}"
-        --prefix src/server/Metrics patch-package
-    # sdkjs
-    - npm install --offline --cache "${NPM_CACHE}"
-        --prefix src/sdkjs/build src/sdkjs/build
-    - npm install --offline --cache "${NPM_CACHE}" --prefix src/sdkjs grunt-cli
-    - npm install --offline --cache "${NPM_CACHE}" --prefix src/sdkjs grunt
-    # yao-pkg
-    - rm -rf src/yao-pkg/node_modules
-    - npm install --offline --cache "${NPM_CACHE}"
-        --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
-    - echo "--- Smoke-test passed ---"
+    - echo "  Testing $(wc -l < /tmp/npm-dirs.txt) directories..."
+    - |
+      SUCCESS_COUNT=0
+      FAIL_COUNT=0
+
+      while IFS= read -r npm_dir; do
+        if [ -f "${npm_dir}/package.json" ]; then
+          # Remove node_modules to force fresh install from cache
+          rm -rf "${npm_dir}/node_modules"
+
+          if npm install --offline --cache "${NPM_CACHE}" --prefix "${npm_dir}" "${npm_dir}" >/dev/null 2>&1; then
+            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          else
+            echo "  ✗ FAILED: ${npm_dir#src/}"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+          fi
+        fi
+      done < /tmp/npm-dirs.txt
+
+      echo ""
+      echo "--- Smoke-test results ---"
+      echo "  Success: ${SUCCESS_COUNT}"
+      echo "  Failures: ${FAIL_COUNT}"
+
+      if [ ${FAIL_COUNT} -gt 0 ]; then
+        echo ""
+        echo "ERROR: ${FAIL_COUNT} directories failed offline install"
+        echo "Cache is incomplete - build will fail"
+        exit 1
+      fi
+
+      echo "--- All directories passed offline test ---"
 
   # ------------------------------------------------------------------ #
-  #  10. Report cache size                                             #
+  #  12. Report cache size                                              #
   # ------------------------------------------------------------------ #
   report_script:
-    - echo "--- Cache stats ---"
-    - find "${NPM_CACHE}/_cacache" -type f | wc -l | xargs echo "Total files:"
-    - du -sh "${NPM_CACHE}/_cacache"
+    - echo "--- Cache statistics ---"
+    - find "${NPM_CACHE}/_cacache" -type f | wc -l | xargs echo "  Total files:"
+    - du -sh "${NPM_CACHE}/_cacache" | awk '{print "  Total size: " $1}'
+    - echo "  Directories cached: $(wc -l < /tmp/npm-dirs.txt)"
 
   # ------------------------------------------------------------------ #
-  #  11. Commit and tag                                                #
+  #  13. Commit and tag                                                 #
   # ------------------------------------------------------------------ #
   commit_script:
     - DATE=$(date -u +%Y%m%d)
-    - NEW_TAG="${DS_TAG}-${DATE}_CI3"
+    - NEW_TAG="${DS_TAG}-${DATE}"
     - echo "Committing as tag ${NEW_TAG}"
-    # Clean transient artefacts
+
+    # Clean transient artifacts
     - rm -rf "${NPM_CACHE}/_logs"
     - rm -rf "${NPM_CACHE}/_update-notifier-last-checked"
-    # Replace _cacache in working tree
+
+    # Copy artifacts to working tree
     - rm -rf _cacache
     - cp -r "${NPM_CACHE}/_cacache" _cacache
-    # Capture yao-pkg manifests
     - cp src/yao-pkg/package.json      yao-pkg-package.json
     - cp src/yao-pkg/package-lock.json yao-pkg-package-lock.json
+
     # Commit
-    - git add _cacache yao-pkg-package.json yao-pkg-package-lock.json
-    - git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE}) with FreeBSD patches applied"
-    # Tag
-    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE}) - patched"
-    - git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${CIRRUS_REPO_FULL_NAME}.git"
-        HEAD --tags
-    - echo "Pushed tag ${NEW_TAG}"
-    - echo "Update your port GH_TUPLE line to:"
+    - git add _cacache yao-pkg-package.json yao-pkg-package-lock.json "extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
+    - git commit -m "npm cache + pkg-fetch patch for OnlyOffice DS ${DS_TAG} (${DATE})"
+    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} complete npm cache + FreeBSD patches (${DATE})"
+    - git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${CIRRUS_REPO_FULL_NAME}.git" HEAD --tags
+
+    - echo ""
+    - echo "✓ Successfully pushed tag ${NEW_TAG}"
+    - echo ""
+    - echo "Update your port GH_TUPLE to:"
     - echo "  fsbruva:onlyoffice-DS-npm-cache:${NEW_TAG}:npm_cache"
