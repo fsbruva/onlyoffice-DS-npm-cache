@@ -132,22 +132,28 @@ build_npm_cache_task:
   #  Without this, npm reads resolved URLs from the lockfile and never #
   #  fetches packuments, causing ENOTCACHED on offline builds.         #
   # ------------------------------------------------------------------ #
-  populate_existing_deps_script:
+populate_existing_deps_script:
     - echo "--- Phase 1: caching existing package.json trees ---"
+    # Delete package-lock.json files to force registry resolution
+    - rm -f src/web-apps/build/package-lock.json
+    - rm -f src/server/npm-shrinkwrap.json
+    - rm -f src/server/DocService/npm-shrinkwrap.json
+    - rm -f src/server/Metrics/npm-shrinkwrap.json
+    - rm -f src/sdkjs/build/npm-shrinkwrap.json
     # web-apps/build
-    - npm install --cache "${NPM_CACHE}"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/web-apps/build src/web-apps/build
     # server
-    - npm install --cache "${NPM_CACHE}"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/server src/server
     # server/DocService
-    - npm install --cache "${NPM_CACHE}"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/server/DocService src/server/DocService
     # server/Metrics
-    - npm install --cache "${NPM_CACHE}"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/server/Metrics src/server/Metrics
     # sdkjs
-    - npm install --cache "${NPM_CACHE}"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/sdkjs src/sdkjs
 
   # ------------------------------------------------------------------ #
