@@ -1,0 +1,264 @@
+# .cirrus.yml
+#
+# Builds the OnlyOffice DocumentServer npm _cacache on a real FreeBSD VM,
+# then commits the result to this repository with a version tag.
+#
+# SETUP (one-time):
+#   1. Create a GitHub Personal Access Token with 'repo' scope at:
+#      https://github.com/settings/tokens
+#   2. Store it as an encrypted variable named GITHUB_TOKEN in the Cirrus CI
+#      repository settings at:
+#      https://cirrus-ci.com/github/fsbruva/onlyoffice-DS-npm-cache
+#   3. Replace the ENCRYPTED[...] placeholder below with the value Cirrus
+#      gives you after encrypting the token.
+#
+# TRIGGERING:
+#   - Go to https://cirrus-ci.com/github/fsbruva/onlyoffice-DS-npm-cache
+#   - Find the "Build npm Cache" task and click the manual trigger button.
+#   - To override version variables for a new release, set them temporarily
+#     in the repository's environment variable overrides in the Cirrus CI UI
+#     before triggering.
+#
+# VERSION VARIABLES:
+#   Update the defaults below when the port's version variables change.
+#   All of these can also be overridden per-run in the Cirrus CI web UI
+#   without editing this file.
+#
+# WHY FreeBSD:
+#   npm's _cacache uses content-addressed storage whose key format is tied
+#   to the npm major version. Building the cache on the same OS with the
+#   same npm binary (pkg: npm-node20) as the poudriere jail guarantees
+#   exact key compatibility, correct handling of bundled transitive
+#   dependencies, and no need for --omit=dev workarounds.
+#
+# WHY --ignore-scripts for sharp / modern-syslog / optipng-bin:
+#   Their postinstall scripts compile native addons or download prebuilt
+#   binaries. The GCE FreeBSD VM does not have libvips or other port
+#   dependencies installed, so we suppress postinstalls here. The port
+#   itself runs those scripts inside the fully-provisioned poudriere jail.
+
+env:
+  # --- Port version variables ---
+  # Keep these in sync with the port Makefile.
+  DS_VERSION:          "9.2.1"
+  DS_BUILD:            "8"
+  NODE_VERSION:        "20.20.0"   # PKGFETCH_NODE_VERSION
+  SHARP_VER:           "0.32.6"    # DS_SHARP_VER
+  MODERN_SYSLOG_VER:   "1.2.0"    # DS_MODERN_SYSLOG_VER
+  YAO_PKG_VER:         "6.14.1"    # @yao-pkg/pkg version
+
+  # --- Cirrus CI / GitHub config ---
+  # Create an encrypted variable at:
+  # https://cirrus-ci.com/github/fsbruva/onlyoffice-DS-npm-cache
+  # then replace the placeholder below.
+  GITHUB_TOKEN: ENCRYPTED[cb63ddb701139b4dac8e4493476ef1ae09fa0078c69f2c153d968d93106a48a2263a08a5337848cc5d2641531b40e2fc]
+
+  # Derived — do not edit
+  DS_TAG: "v${DS_VERSION}.${DS_BUILD}"
+  NPM_CACHE: "/tmp/npm-cache"
+
+build_npm_cache_task:
+  name: "Build npm Cache"
+
+  # Only trigger manually from the Cirrus CI web UI — never on push/PR.
+  trigger_type: manual
+
+  # Real FreeBSD VM on Google Compute Engine.
+  # Matches the FreeBSD major version your poudriere jail uses.
+  # Available families: freebsd-14-3, freebsd-14-2, freebsd-13-4, etc.
+  freebsd_instance:
+    image_family: freebsd-14-2
+    cpu: 4
+    memory: 8GB
+    disk: 50
+
+  # 60 minutes is ample; hard limit for free tier is 120 minutes.
+  timeout_in: 60m
+
+  # ------------------------------------------------------------------ #
+  #  1. Install dependencies                                             #
+  # ------------------------------------------------------------------ #
+  install_script:
+    - pkg install -y npm-node20 git
+    - node --version
+    - npm --version
+
+  # ------------------------------------------------------------------ #
+  #  2. Clone this repo (with credentials so we can push back later)   #
+  # ------------------------------------------------------------------ #
+  clone_script:
+    - git clone
+        --depth 1
+        "https://x-access-token:${GITHUB_TOKEN}@github.com/${CIRRUS_REPO_FULL_NAME}.git"
+        "${CIRRUS_WORKING_DIR}"
+    - git config user.name  "cirrus-ci[bot]"
+    - git config user.email "cirrus-ci[bot]@users.noreply.github.com"
+
+  # ------------------------------------------------------------------ #
+  #  3. Clone ONLYOFFICE source repos at the release tag               #
+  # ------------------------------------------------------------------ #
+  clone_sources_script:
+    - echo "Building cache for DS_TAG=${DS_TAG}"
+    - git clone --depth 1 --branch "${DS_TAG}" --single-branch
+        https://github.com/ONLYOFFICE/web-apps.git src/web-apps
+    - git clone --depth 1 --branch "${DS_TAG}" --single-branch
+        https://github.com/ONLYOFFICE/server.git src/server
+    - git clone --depth 1 --branch "${DS_TAG}" --single-branch
+        https://github.com/ONLYOFFICE/sdkjs.git src/sdkjs
+    - echo "=== web-apps ===" && git -C src/web-apps describe --tags
+    - echo "=== server    ===" && git -C src/server  describe --tags
+    - echo "=== sdkjs     ===" && git -C src/sdkjs   describe --tags
+
+  # ------------------------------------------------------------------ #
+  #  4. Create yao-pkg workspace                                        #
+  # ------------------------------------------------------------------ #
+  create_yao_pkg_script:
+    - mkdir -p src/yao-pkg
+    - |
+      cat > src/yao-pkg/package.json << 'EOF'
+      {
+        "name": "yao-pkg-cache-seed",
+        "version": "1.0.0",
+        "private": true,
+        "dependencies": {}
+      }
+      EOF
+
+  # ------------------------------------------------------------------ #
+  #  5. Phase 1 — cache full existing package.json trees               #
+  #                                                                     #
+  #  Delete package-lock.json first in each directory so npm performs  #
+  #  full registry resolution and writes packuments to _cacache.       #
+  #  Without this, npm reads resolved URLs from the lockfile and never #
+  #  fetches packuments, causing ENOTCACHED on offline builds.         #
+  # ------------------------------------------------------------------ #
+  populate_existing_deps_script:
+    - echo "--- Phase 1: caching existing package.json trees ---"
+    # web-apps/build
+    - npm install --cache "${NPM_CACHE}"
+        --prefix src/web-apps/build src/web-apps/build
+    # server
+    - npm install --cache "${NPM_CACHE}"
+        --prefix src/server src/server
+    # server/DocService
+    - npm install --cache "${NPM_CACHE}"
+        --prefix src/server/DocService src/server/DocService
+    # server/Metrics
+    - npm install --cache "${NPM_CACHE}"
+        --prefix src/server/Metrics src/server/Metrics
+    # sdkjs
+    - npm install --cache "${NPM_CACHE}"
+        --prefix src/sdkjs src/sdkjs
+
+  # ------------------------------------------------------------------ #
+  #  6. Phase 2 — port-specific installs (mirrors port do-build)       #
+  # ------------------------------------------------------------------ #
+  populate_port_deps_script:
+    - echo "--- Phase 2: port-specific installs ---"
+    # web-apps/build
+    - npm install --cache "${NPM_CACHE}" --prefix src/web-apps/build patch-package
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts
+        --prefix src/web-apps/build optipng-bin@5.1.0
+    # server
+    - npm install --cache "${NPM_CACHE}" --prefix src/server grunt-cli
+    - npm install --cache "${NPM_CACHE}" --prefix src/server grunt
+    # server/DocService
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts
+        --prefix src/server/DocService "sharp@${SHARP_VER}"
+    - npm install --cache "${NPM_CACHE}"
+        --prefix src/server/DocService patch-package
+    # server/Metrics
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts
+        --prefix src/server/Metrics "modern-syslog@${MODERN_SYSLOG_VER}"
+    - npm install --cache "${NPM_CACHE}"
+        --prefix src/server/Metrics patch-package
+    # sdkjs
+    - npm install --cache "${NPM_CACHE}" --prefix src/sdkjs grunt-cli
+    - npm install --cache "${NPM_CACHE}" --prefix src/sdkjs grunt
+    # yao-pkg
+    - npm install --cache "${NPM_CACHE}"
+        --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
+
+  # ------------------------------------------------------------------ #
+  #  7. Offline smoke-test                                              #
+  #     Mirrors the jail exactly: no lockfile, --offline, both phases. #
+  #     Any ENOTCACHED here means the cache is incomplete — task fails #
+  #     before anything is committed.                                  #
+  # ------------------------------------------------------------------ #
+  smoke_test_script:
+    - echo "--- Smoke-testing cache offline ---"
+    # web-apps/build
+    - npm install --offline --cache "${NPM_CACHE}"
+        --prefix src/web-apps/build src/web-apps/build
+    - npm install --offline --cache "${NPM_CACHE}"
+        --prefix src/web-apps/build patch-package
+    - npm install --offline --cache "${NPM_CACHE}" --ignore-scripts
+        --prefix src/web-apps/build optipng-bin@5.1.0
+    # server
+    - npm install --offline --cache "${NPM_CACHE}"
+        --prefix src/server src/server
+    - npm install --offline --cache "${NPM_CACHE}" --prefix src/server grunt-cli
+    - npm install --offline --cache "${NPM_CACHE}" --prefix src/server grunt
+    # server/DocService
+    - npm install --offline --cache "${NPM_CACHE}"
+        --prefix src/server/DocService src/server/DocService
+    - npm install --offline --cache "${NPM_CACHE}" --ignore-scripts
+        --prefix src/server/DocService "sharp@${SHARP_VER}"
+    - npm install --offline --cache "${NPM_CACHE}"
+        --prefix src/server/DocService patch-package
+    # server/Metrics
+    - npm install --offline --cache "${NPM_CACHE}"
+        --prefix src/server/Metrics src/server/Metrics
+    - npm install --offline --cache "${NPM_CACHE}" --ignore-scripts
+        --prefix src/server/Metrics "modern-syslog@${MODERN_SYSLOG_VER}"
+    - npm install --offline --cache "${NPM_CACHE}"
+        --prefix src/server/Metrics patch-package
+    # sdkjs
+    - npm install --offline --cache "${NPM_CACHE}"
+        --prefix src/sdkjs src/sdkjs
+    - npm install --offline --cache "${NPM_CACHE}" --prefix src/sdkjs grunt-cli
+    - npm install --offline --cache "${NPM_CACHE}" --prefix src/sdkjs grunt
+    # yao-pkg
+    - rm -rf src/yao-pkg/node_modules
+    - npm install --offline --cache "${NPM_CACHE}"
+        --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
+    - echo "--- Smoke-test passed ---"
+
+  # ------------------------------------------------------------------ #
+  #  8. Report cache size                                               #
+  # ------------------------------------------------------------------ #
+  report_script:
+    - echo "--- Cache stats ---"
+    - find "${NPM_CACHE}/_cacache" -type f | wc -l | xargs echo "Total files:"
+    - du -sh "${NPM_CACHE}/_cacache"
+
+  # ------------------------------------------------------------------ #
+  #  9. Commit and tag                                                  #
+  # ------------------------------------------------------------------ #
+  commit_script:
+    - DATE=$(date -u +%Y%m%d)
+    - NEW_TAG="${DS_TAG}-${DATE}"
+    - echo "Committing as tag ${NEW_TAG}"
+    # Clean transient artefacts
+    - rm -rf "${NPM_CACHE}/_logs"
+    - rm -rf "${NPM_CACHE}/_update-notifier-last-checked"
+    # Replace _cacache in working tree
+    - rm -rf _cacache
+    - cp -r "${NPM_CACHE}/_cacache" _cacache
+    # Capture yao-pkg manifests
+    - cp src/yao-pkg/package.json      yao-pkg-package.json
+    - cp src/yao-pkg/package-lock.json yao-pkg-package-lock.json
+    # Commit
+    - git add _cacache yao-pkg-package.json yao-pkg-package-lock.json
+    - git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE})"
+    # Tag (replace the plain tag line with the gpg block below for signed tags)
+    #
+    # Signed tag (requires GPG_KEY_ID and GPG_PRIVATE_KEY encrypted variables):
+    #   echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
+    #   git tag -s "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE})"
+    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE})"
+    - git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${CIRRUS_REPO_FULL_NAME}.git"
+        HEAD --tags
+    - echo "Pushed tag ${NEW_TAG}"
+    - echo "Update your port GH_TUPLE line to:"
+    - echo "  fsbruva:onlyoffice-DS-npm-cache:${NEW_TAG}:npm_cache"
