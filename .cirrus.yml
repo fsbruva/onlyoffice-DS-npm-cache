@@ -324,9 +324,15 @@ build_npm_cache_task:
   # ------------------------------------------------------------------ #
   report_script:
     - echo "--- Cache statistics ---"
-    - find "${NPM_CACHE}/_cacache" -type f | wc -l | xargs echo "  Total files:"
-    - du -sh "${NPM_CACHE}/_cacache" | awk '{print "  Total size: " $1}'
-    - echo "  Directories cached: $(wc -l < /tmp/npm-dirs.txt)"
+    - |
+      file_count=$(find "${NPM_CACHE}/_cacache" -type f | wc -l)
+      echo "  Total files: ${file_count}"
+    - |
+      cache_size=$(du -sh "${NPM_CACHE}/_cacache" | awk '{print $1}')
+      echo "  Total size: ${cache_size}"
+    - |
+      dir_count=$(wc -l < /tmp/npm-dirs.txt)
+      echo "  Directories cached: ${dir_count}"
 
   # ------------------------------------------------------------------ #
   #  13. Commit and tag                                                 #
