@@ -1,0 +1,8 @@
+{
+  "name": "yao-pkg-cache-seed",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@yao-pkg/pkg": "^6.14.1"
+  }
+}
