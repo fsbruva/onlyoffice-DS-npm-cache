@@ -169,7 +169,7 @@ build_npm_cache_task:
         --prefix src/server/Metrics src/server/Metrics
     # sdkjs
     - npm install --cache "${NPM_CACHE}" --ignore-scripts
-        --prefix src/sdkjs src/sdkjs
+        --prefix src/sdkjs/build src/sdkjs/build
 
   # ------------------------------------------------------------------ #
   #  8. Phase 2 — port-specific installs (mirrors port do-build)       #
@@ -235,7 +235,7 @@ build_npm_cache_task:
         --prefix src/server/Metrics patch-package
     # sdkjs
     - npm install --offline --cache "${NPM_CACHE}"
-        --prefix src/sdkjs src/sdkjs
+        --prefix src/sdkjs/build src/sdkjs/build
     - npm install --offline --cache "${NPM_CACHE}" --prefix src/sdkjs grunt-cli
     - npm install --offline --cache "${NPM_CACHE}" --prefix src/sdkjs grunt
     # yao-pkg
@@ -257,7 +257,7 @@ build_npm_cache_task:
   # ------------------------------------------------------------------ #
   commit_script:
     - DATE=$(date -u +%Y%m%d)
-    - NEW_TAG="${DS_TAG}-${DATE}_CI"
+    - NEW_TAG="${DS_TAG}-${DATE}_CI2"
     - echo "Committing as tag ${NEW_TAG}"
     # Clean transient artefacts
     - rm -rf "${NPM_CACHE}/_logs"
