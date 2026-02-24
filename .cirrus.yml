@@ -139,7 +139,7 @@ build_npm_cache_task:
     - rm -f src/server/npm-shrinkwrap.json
     - rm -f src/server/DocService/npm-shrinkwrap.json
     - rm -f src/server/Metrics/npm-shrinkwrap.json
-    - rm -f src/sdkjs/build/npm-shrinkwrap.json
+#    - rm -f src/sdkjs/build/npm-shrinkwrap.json
     # web-apps/build
     - npm install --cache "${NPM_CACHE}" --ignore-scripts
         --prefix src/web-apps/build src/web-apps/build
@@ -243,7 +243,7 @@ build_npm_cache_task:
   # ------------------------------------------------------------------ #
   commit_script:
     - DATE=$(date -u +%Y%m%d)
-    - NEW_TAG="${DS_TAG}-${DATE}"
+    - NEW_TAG="${DS_TAG}-${DATE}_CI"
     - echo "Committing as tag ${NEW_TAG}"
     # Clean transient artefacts
     - rm -rf "${NPM_CACHE}/_logs"
