@@ -233,18 +233,37 @@ build_npm_cache_task:
     - PKG_FETCH_VERSION=$(cat node_modules/@yao-pkg/pkg/package.json | grep -A1 '"@yao-pkg/pkg-fetch"' | tail -1 | cut -d'"' -f4)
     - echo "  pkg-fetch version: ${PKG_FETCH_VERSION}"
 
-    # Fetch FreeBSD node20 patches
+    # Fetch FreeBSD node20 patches (robust, no HTML scraping)
     - echo "  Fetching FreeBSD node20 patches..."
     - mkdir -p freebsd-patches
     - |
-      patch_list=$(fetch -qo - "https://cgit.freebsd.org/ports/tree/www/node20/files/" | grep -o 'patch-[^"]*\.patch' | sort -u)
+      set -e
+
+      echo "  Cloning FreeBSD ports tree (shallow)..."
+      git clone --depth 1 https://github.com/freebsd/freebsd-ports.git /tmp/freebsd-ports
+
+      NODE_PORT_DIR="/tmp/freebsd-ports/www/node20/files"
+
+      if [ ! -d "${NODE_PORT_DIR}" ]; then
+        echo "ERROR: node20 port directory not found"
+        exit 1
+      fi
+
       patch_count=0
-      for patch_file in ${patch_list}; do
-        if fetch -o "freebsd-patches/${patch_file}" "https://cgit.freebsd.org/ports/plain/www/node20/files/${patch_file}" 2>/dev/null; then
+
+      for patch_file in ${NODE_PORT_DIR}/patch-*; do
+        if [ -f "${patch_file}" ]; then
+          cp "${patch_file}" freebsd-patches/
           patch_count=$((patch_count + 1))
         fi
       done
+
       echo "  Downloaded ${patch_count} FreeBSD patches"
+
+      if [ "${patch_count}" -eq 0 ]; then
+        echo "ERROR: No FreeBSD node20 patches found"
+        exit 1
+      fi
 
     # Backup and modify pkg-fetch patch
     - cd node_modules/@yao-pkg/pkg-fetch/patches
