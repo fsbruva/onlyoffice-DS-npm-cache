@@ -132,7 +132,6 @@ build_npm_cache_task:
   delete_shrinkwrap_script:
     - echo "--- Deleting npm-shrinkwrap.json files ---"
     - find src -type f -name npm-shrinkwrap.json -delete
-    - find src -type f -name npm-shrinkwrap.json -exec echo "Found: {}" \; || echo "  All shrinkwrap files deleted"
 
   # ------------------------------------------------------------------ #
   #  6. Create yao-pkg workspace                                        #
