@@ -39,15 +39,15 @@ on:
       ds_version:
         description: 'DISTVERSION (e.g. 9.1.0)'
         required: true
-        default: '9.2.1'
+        default: '9.1.0'
       ds_build:
         description: 'DS_BUILD number (e.g. 177)'
         required: true
-        default: '8'
+        default: '177'
       node_version:
         description: 'PKGFETCH_NODE_VERSION (e.g. 20.19.5)'
         required: true
-        default: '20.20.0'
+        default: '20.19.5'
       sharp_ver:
         description: 'DS_SHARP_VER (e.g. 0.32.6)'
         required: true
@@ -59,7 +59,7 @@ on:
       yao_pkg_ver:
         description: '@yao-pkg/pkg version (e.g. 6.9.0)'
         required: true
-        default: '6.14.1'
+        default: '6.9.0'
 
 jobs:
   build-cache:
@@ -279,29 +279,42 @@ jobs:
         working-directory: src/yao-pkg
         run: |
           rm -rf node_modules
-     ne --cache "${{ env.NPM_CACHE }}" "@yao-pkg/pkg@${{ env.YAO_PKG_VER }}"
+          npm install --offline --cache "${{ env.NPM_CACHE }}" "@yao-pkg/pkg@${{ env.YAO_PKG_VER }}"
 
       - name: Clean transient cache artefacts
-        r-rf "${{ env.NPM_CACHE }}/_update-notifier-last-checked"
+        run: |
+          rm -rf "${{ env.NPM_CACHE }}/_logs"
+          rm -rf "${{ env.NPM_CACHE }}/_update-notifier-last-checked"
 
       - name: Commit and tag
         run: |
-          DATE=$(date -u +rf _cacache
+          DATE=$(date -u +%Y%m%d)
+          NEW_TAG="${{ env.DS_TAG }}-${DATE}"
+
+          rm -rf _cacache
           cp -r "${{ env.NPM_CACHE }}/_cacache" _cacache
 
-          cp src/yao-pkg/package.json      yao-pkg-package-lock.json
+          cp src/yao-pkg/package.json      yao-pkg-package.json
+          cp src/yao-pkg/package-lock.json yao-pkg-package-lock.json
 
           git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.norao-pkg-package-lock.json
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add _cacache yao-pkg-package.json yao-pkg-package-lock.json
           git commit -m "npm cache for OnlyOffice DS ${{ env.DS_TAG }} (${DATE})"
 
-          # To use sGPG_PRIVATE_KEY and GPG_PASSPHRASE, then replace the plain
+          # To use signed tags, store your key in repository secrets as
+          # GPG_PRIVATE_KEY and GPG_PASSPHRASE, then replace the plain
           # git tag line below with:
           #
-          #   echo " #   echo "${{ secrets.GPG_PASSPHRASE }}" | \
-          #     gpg --batch --passphrase-fd 0 --pinentry-mode loopback --quiet truDS_TAG }} npm cache (${DATE})"
+          #   echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+          #   echo "${{ secrets.GPG_PASSPHRASE }}" | \
+          #     gpg --batch --passphrase-fd 0 --pinentry-mode loopback --quiet true
+          #   git tag -s "$NEW_TAG" -m "OnlyOffice DS ${{ env.DS_TAG }} npm cache (${DATE})"
 
           git tag "$NEW_TAG" -m "OnlyOffice DS ${{ env.DS_TAG }} npm cache (${DATE})"
-          d and pushed tag: $NEW_TAG"
+          git push origin HEAD --tags
+
+          echo "::notice::Committed and pushed tag: $NEW_TAG"
           echo "::notice::Update your port GH_TUPLE line to:"
-          echo "::notice::  fsbruva:on
+          echo "::notice::  fsbruva:onlyoffice-DS-npm-cache:${NEW_TAG}:npm_cache"
