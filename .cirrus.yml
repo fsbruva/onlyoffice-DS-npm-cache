@@ -315,7 +315,7 @@ build_npm_cache_task:
           # Remove node_modules to force fresh install from cache
           rm -rf "${npm_dir}/node_modules"
 
-          if npm install --offline --cache "${NPM_CACHE}" --prefix "${npm_dir}" "${npm_dir}" >/dev/null 2>&1; then
+          if npm install --ignore-scripts --offline --cache "${NPM_CACHE}" --prefix "${npm_dir}" "${npm_dir}" >/dev/null 2>&1; then
             SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
           else
             echo "  ✗ FAILED: ${npm_dir#src/}"
