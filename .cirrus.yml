@@ -37,7 +37,7 @@ build_npm_cache_task:
   timeout_in: 60m
 
   # ------------------------------------------------------------------ #
-  #  1. Install dependencies                                             #
+  #  1. Install dependencies                                           #
   # ------------------------------------------------------------------ #
   install_script:
     - pkg install -y npm-node20 git
@@ -45,7 +45,7 @@ build_npm_cache_task:
     - npm --version
 
   # ------------------------------------------------------------------ #
-  #  2. Clone this repo (with credentials)                              #
+  #  2. Clone this repo (with credentials)                             #
   # ------------------------------------------------------------------ #
   clone_script:
     - git clone --depth 1
@@ -55,7 +55,7 @@ build_npm_cache_task:
     - git config user.email "cirrus-ci[bot]@users.noreply.github.com"
 
   # ------------------------------------------------------------------ #
-  #  3. Clone ONLYOFFICE source repos                                   #
+  #  3. Clone ONLYOFFICE source repos                                  #
   # ------------------------------------------------------------------ #
   clone_sources_script:
     - echo "Building cache for DS_TAG=${DS_TAG}"
@@ -70,7 +70,7 @@ build_npm_cache_task:
     - echo "=== sdkjs     ===" && git -C src/sdkjs   describe --tags
 
   # ------------------------------------------------------------------ #
-  #  4. Fetch and apply FreeBSD port patches                            #
+  #  4. Fetch and apply FreeBSD port patches                           #
   # ------------------------------------------------------------------ #
   apply_patches_script:
     - echo "--- Fetching FreeBSD port patches ---"
@@ -89,7 +89,7 @@ build_npm_cache_task:
     - grep -q '"concurrently"' src/server/package.json && echo "  ✓ concurrently" || echo "  ✗ concurrently"
 
   # ------------------------------------------------------------------ #
-  #  5. Delete lockfiles (shrinkwrap and package-lock)                  #
+  #  5. Delete lockfiles (shrinkwrap and package-lock)                 #
   #     Dynamic approach: find and delete all, excluding certain paths #
   # ------------------------------------------------------------------ #
   delete_lockfiles_script:
@@ -105,6 +105,7 @@ build_npm_cache_task:
         ! -path "*/v8_89/*" \
         ! -path "*/document-server-integration/*" \
         ! -path "*/document-server-package/*" \
+        ! -path "*/perfect-scrollbar/*" \
         -exec echo "    Deleting: {}" \; -delete
 
     - echo "  Verification (should show nothing):"
@@ -112,7 +113,7 @@ build_npm_cache_task:
         ! -path "*/v8_89/*" || echo "    All lockfiles removed"
 
   # ------------------------------------------------------------------ #
-  #  6. Dynamically discover all npm package directories                #
+  #  6. Dynamically discover all npm package directories               #
   #     Ensures we don't miss any dependencies                         #
   # ------------------------------------------------------------------ #
   discover_npm_dirs_script:
@@ -123,19 +124,21 @@ build_npm_cache_task:
       # - document-server-integration: Just examples
       # - document-server-package: Build output directory
       # - onlyoffice.github.io: Handled separately as sdkjs-plugins
+      # - perfect-scrollbar does not have a platform option for freebsd
 
       find src -type f -name package.json \
         ! -path "*/v8_89/*" \
         ! -path "*/document-server-integration/*" \
         ! -path "*/document-server-package/*" \
         ! -path "*/onlyoffice.github.io/*" \
+        ! -path "*/perfect-scrollbar/*" \
         -exec dirname {} \; | sort -u > /tmp/npm-dirs.txt
 
       echo "  Found $(wc -l < /tmp/npm-dirs.txt) npm directories:"
       cat /tmp/npm-dirs.txt | sed 's|^src/|    |'
 
   # ------------------------------------------------------------------ #
-  #  7. Create yao-pkg workspace                                        #
+  #  7. Create yao-pkg workspace                                       #
   # ------------------------------------------------------------------ #
   create_yao_pkg_script:
     - mkdir -p src/yao-pkg
@@ -218,7 +221,7 @@ build_npm_cache_task:
         --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
 
   # ------------------------------------------------------------------ #
-  #  10. Generate pkg-fetch FreeBSD node patches                        #
+  #  10. Generate pkg-fetch FreeBSD node patches                       #
   # ------------------------------------------------------------------ #
   generate_pkg_fetch_patch_script:
     - echo "--- Generating pkg-fetch FreeBSD node patch ---"
@@ -300,7 +303,7 @@ build_npm_cache_task:
     - echo "--- Patch generated: $(wc -l < extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch) lines ---"
 
   # ------------------------------------------------------------------ #
-  #  11. Offline smoke-test on ALL discovered directories               #
+  #  11. Offline smoke-test on ALL discovered directories              #
   #      Validates cache completeness                                  #
   # ------------------------------------------------------------------ #
   smoke_test_script:
@@ -339,7 +342,7 @@ build_npm_cache_task:
       echo "--- All directories passed offline test ---"
 
   # ------------------------------------------------------------------ #
-  #  12. Report cache size                                              #
+  #  12. Report cache size                                             #
   # ------------------------------------------------------------------ #
   report_script:
     - echo "--- Cache statistics ---"
@@ -354,7 +357,7 @@ build_npm_cache_task:
       echo "  Directories cached: ${dir_count}"
 
   # ------------------------------------------------------------------ #
-  #  13. Commit and tag                                                 #
+  #  13. Commit and tag                                                #
   # ------------------------------------------------------------------ #
   commit_script:
     - DATE=$(date -u +%Y%m%d)
