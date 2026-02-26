@@ -1,4 +1,4 @@
-https://github.com/yao-pkg/pkg-fetch/raw/v^0.27.3/patches/node.v20.20.0.cpp.patch
+https://github.com/yao-pkg/pkg-fetch/raw/v0.27.3/patches/node.v20.20.0.cpp.patch
 + local FreeBSD patches
 index 6710516..f453408 100644
 --- yao-pkg/node_modules/@yao-pkg/pkg-fetch/patches/node.v20.20.0.cpp.patch
