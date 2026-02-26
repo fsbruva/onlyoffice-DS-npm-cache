@@ -344,6 +344,28 @@ build_npm_cache_task:
     - echo ""
     - echo "Two-phase optimization complete!"
 
+commit_lockfiles_script:
+  - echo "--- Committing generated package-lock.json files ---"
+  - |
+    # Create directory structure in repo
+    mkdir -p lockfiles
+
+    # Copy all generated lockfiles
+    lockfile_count=0
+    while IFS= read -r npm_dir; do
+      if [ -f "${npm_dir}/package-lock.json" ]; then
+        # Preserve directory structure
+        rel_path="${npm_dir#src/}"
+        target_dir="lockfiles/${rel_path}"
+        mkdir -p "${target_dir}"
+        cp "${npm_dir}/package-lock.json" "${target_dir}/package-lock.json"
+        lockfile_count=$((lockfile_count + 1))
+        echo "  Saved: ${rel_path}/package-lock.json"
+      fi
+    done < /tmp/npm-dirs.txt
+
+    echo "  Total lockfiles saved: ${lockfile_count}"
+
   commit_script:
     - DATE=$(date -u +%Y%m%d%H)
     - NEW_TAG="${DS_TAG}-${DATE}-CI"
@@ -354,7 +376,7 @@ build_npm_cache_task:
     - cp -r "${NPM_CACHE}/_cacache" _cacache
     - cp src/yao-pkg/package.json      yao-pkg-package.json
     - cp src/yao-pkg/package-lock.json yao-pkg-package-lock.json
-    - git add _cacache yao-pkg-package.json yao-pkg-package-lock.json "extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
+    - git add _cacache lockfiles/ yao-pkg-package.json yao-pkg-package-lock.json "extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
     - git commit -m "npm cache (TWO-PHASE OPTIMIZED) for OnlyOffice DS ${DS_TAG} (${DATE})"
     - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} two-phase optimized cache (${DATE})"
     - git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${CIRRUS_REPO_FULL_NAME}.git" HEAD --tags
