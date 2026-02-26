@@ -344,27 +344,27 @@ build_npm_cache_task:
     - echo ""
     - echo "Two-phase optimization complete!"
 
-commit_lockfiles_script:
-  - echo "--- Committing generated package-lock.json files ---"
-  - |
-    # Create directory structure in repo
-    mkdir -p lockfiles
+  commit_lockfiles_script:
+    - echo "--- Committing generated package-lock.json files ---"
+    - |
+      # Create directory structure in repo
+      mkdir -p lockfiles
 
-    # Copy all generated lockfiles
-    lockfile_count=0
-    while IFS= read -r npm_dir; do
-      if [ -f "${npm_dir}/package-lock.json" ]; then
-        # Preserve directory structure
-        rel_path="${npm_dir#src/}"
-        target_dir="lockfiles/${rel_path}"
-        mkdir -p "${target_dir}"
-        cp "${npm_dir}/package-lock.json" "${target_dir}/package-lock.json"
-        lockfile_count=$((lockfile_count + 1))
-        echo "  Saved: ${rel_path}/package-lock.json"
-      fi
-    done < /tmp/npm-dirs.txt
+      # Copy all generated lockfiles
+      lockfile_count=0
+      while IFS= read -r npm_dir; do
+        if [ -f "${npm_dir}/package-lock.json" ]; then
+          # Preserve directory structure
+          rel_path="${npm_dir#src/}"
+          target_dir="lockfiles/${rel_path}"
+          mkdir -p "${target_dir}"
+          cp "${npm_dir}/package-lock.json" "${target_dir}/package-lock.json"
+          lockfile_count=$((lockfile_count + 1))
+          echo "  Saved: ${rel_path}/package-lock.json"
+        fi
+      done < /tmp/npm-dirs.txt
 
-    echo "  Total lockfiles saved: ${lockfile_count}"
+      echo "  Total lockfiles saved: ${lockfile_count}"
 
   commit_script:
     - DATE=$(date -u +%Y%m%d%H)
