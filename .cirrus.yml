@@ -9,8 +9,8 @@
 #   Tier 4: Full discovery (~23 dirs) - current approach, known to work but bloated
 
 env:
-  DS_VERSION:          "9.2.1"
-  DS_BUILD:            "8"
+  DS_VERSION:          "9.3.0"
+  DS_BUILD:            "138"
   NODE_VERSION:        "20.20.0"
   SHARP_VER:           "0.32.6"
   MODERN_SYSLOG_VER:   "1.2.0"
