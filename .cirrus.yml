@@ -75,9 +75,11 @@ build_npm_cache_task:
     - echo "--- Deleting npm-shrinkwrap.json files ---"
     - |
       echo "  Directories that had npm-shrinkwrap.json:"
-      find src -type f -name npm-shrinkwrap.json -exec dirname {} \; | sed 's|^|    |'
-      shrinkwrap_count=$(find src -type f -name npm-shrinkwrap.json | wc -l)
-      echo "  Total: ${shrinkwrap_count} files"
+      find src -type f -name npm-shrinkwrap.json \
+        -exec dirname {} \; | sort -u > /tmp/shrinkwrap-dirs.txt
+
+      dir_count=$(wc -l < /tmp/shrinkwrap-dirs.txt)
+      echo "  Found ${dir_count} shrinkwrap directories"
     - find src -type f -name npm-shrinkwrap.json -delete
     - echo "  ✓ All shrinkwrap files deleted"
 
@@ -165,24 +167,6 @@ build_npm_cache_task:
   # Capture generated lockfiles
   capture_lockfiles_script:
     - echo "--- Capturing generated package-lock.json files ---"
-    - mkdir -p /tmp/lockfiles
-    - |
-      lockfile_count=0
-      while IFS= read -r npm_dir; do
-        if [ -f "${npm_dir}/package-lock.json" ]; then
-          # Save the lockfile with path encoding
-          lockfile_path=$(echo "${npm_dir}" | sed 's|/|__|g')
-          cp "${npm_dir}/package-lock.json" "/tmp/lockfiles/${lockfile_path}.json"
-          lockfile_count=$((lockfile_count + 1))
-        fi
-      done < /tmp/npm-dirs.txt
-
-      echo "  Captured ${lockfile_count} package-lock.json files"
-    - ls -lh /tmp/lockfiles/ | tail -20
-
-  # Capture generated lockfiles
-  capture_lockfiles_script:
-    - echo "--- Capturing generated package-lock.json files ---"
     - mkdir -p lockfiles
     - |
       lockfile_count=0
@@ -196,7 +180,7 @@ build_npm_cache_task:
           lockfile_count=$((lockfile_count + 1))
           echo "  Saved: ${rel_path}/package-lock.json"
         fi
-      done < /tmp/npm-dirs.txt
+      done < /tmp/shrinkwrap-dirs.txt
 
       echo "  Total lockfiles captured: ${lockfile_count}"
     - echo "  Lockfiles will be committed for use by port Makefile"
