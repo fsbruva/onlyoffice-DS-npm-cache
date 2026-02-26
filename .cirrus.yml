@@ -19,6 +19,7 @@ env:
   DS_TAG: "v${DS_VERSION}.${DS_BUILD}"
   NPM_CACHE: "/tmp/npm-cache"
   NPM_CACHE_PHASE1: "/tmp/npm-cache-phase1"
+  NPM_CACHE_NPX: "/tmp/npm-cache-npx"
   PORTS_BASE: "https://cgit.freebsd.org/ports/plain/www/onlyoffice-documentserver"
 
 build_npm_cache_task:
@@ -179,6 +180,27 @@ build_npm_cache_task:
       echo "  Captured ${lockfile_count} package-lock.json files"
     - ls -lh /tmp/lockfiles/ | tail -20
 
+  # Capture generated lockfiles
+  capture_lockfiles_script:
+    - echo "--- Capturing generated package-lock.json files ---"
+    - mkdir -p lockfiles
+    - |
+      lockfile_count=0
+      while IFS= read -r npm_dir; do
+        if [ -f "${npm_dir}/package-lock.json" ]; then
+          # Preserve directory structure: src/server/Common -> lockfiles/server/Common
+          rel_path="${npm_dir#src/}"
+          target_dir="lockfiles/${rel_path}"
+          mkdir -p "${target_dir}"
+          cp "${npm_dir}/package-lock.json" "${target_dir}/package-lock.json"
+          lockfile_count=$((lockfile_count + 1))
+          echo "  Saved: ${rel_path}/package-lock.json"
+        fi
+      done < /tmp/npm-dirs.txt
+
+      echo "  Total lockfiles captured: ${lockfile_count}"
+    - echo "  Lockfiles will be committed for use by port Makefile"
+
   # Report Phase 1 cache size
   phase1_report_script:
     - echo "--- Phase 1 Cache Statistics ---"
@@ -253,35 +275,55 @@ build_npm_cache_task:
   generate_pkg_fetch_patch_script:
     - echo "--- Generating pkg-fetch FreeBSD node patch ---"
     - mkdir -p /tmp/patch-workspace
+    - mkdir -p /tmp/freebsd-ports
+    - mkdir -p "${NPM_CACHE_NPX}"
     - cd /tmp/patch-workspace
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts patch-package
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts "@yao-pkg/pkg@${YAO_PKG_VER}"
-    - PKG_FETCH_VERSION=$(cat node_modules/@yao-pkg/pkg/package.json | grep -A1 '"@yao-pkg/pkg-fetch"' | tail -1 | cut -d'"' -f4 | sed 's/\^//')
+
+    # Install dependencies
+    - npm install --cache "${NPM_CACHE_NPX}" patch-package
+    - npm install --cache "${NPM_CACHE_NPX}" "@yao-pkg/pkg@${YAO_PKG_VER}"
+
+    # Get pkg-fetch version
+    - PKG_FETCH_VERSION=$(cat node_modules/@yao-pkg/pkg/package.json | grep -A1 '"@yao-pkg/pkg-fetch"' | tail -1 | cut -d'"' -f4)
     - echo "  pkg-fetch version: ${PKG_FETCH_VERSION}"
 
-    # Fetch FreeBSD node20 patches from GitHub mirror (robust, no HTML scraping)
-    - echo "  Fetching FreeBSD node20 patches from GitHub..."
+    # Extract node major version from NODE_VERSION (e.g., "20.20.0" -> "20", "22.14.1" -> "22")
+    - NODE_MAJOR=$(echo "${NODE_VERSION}" | cut -d'.' -f1)
+    - echo "  Node major version: ${NODE_MAJOR}"
+
+    # Fetch FreeBSD node20 patches (robust, no HTML scraping)
+    - echo "  Fetching FreeBSD node${NODE_MAJOR} patches from GitHub..."
     - mkdir -p freebsd-patches
     - |
       set -e
-      # Use GitHub API to list files in www/node20/files/
-      GITHUB_API="https://api.github.com/repos/freebsd/freebsd-ports/contents/www/node20/files"
 
-      echo "    Querying GitHub API..."
-      patch_files=$(fetch -qo - "${GITHUB_API}" | grep '"name":' | grep 'patch-.*\.patch' | cut -d'"' -f4)
+      echo "  Cloning FreeBSD ports tree (shallow)..."
+      git clone --depth 1 https://github.com/freebsd/freebsd-ports.git /tmp/freebsd-ports
+
+      NODE_PORT_DIR="/tmp/freebsd-ports/www/node${NODE_MAJOR}/files"
+
+      if [ ! -d "${NODE_PORT_DIR}" ]; then
+        echo "ERROR: node${NODE_MAJOR} port directory not found"
+        exit 1
+      fi
 
       patch_count=0
-      for patch_file in ${patch_files}; do
-        echo "    Downloading ${patch_file}..."
-        GITHUB_RAW="https://raw.githubusercontent.com/freebsd/freebsd-ports/main/www/node20/files/${patch_file}"
-        if fetch -o "freebsd-patches/${patch_file}" "${GITHUB_RAW}" 2>/dev/null; then
+
+      for patch_file in ${NODE_PORT_DIR}/patch-*; do
+        if [ -f "${patch_file}" ]; then
+          cp "${patch_file}" freebsd-patches/
           patch_count=$((patch_count + 1))
         fi
       done
 
       echo "  Downloaded ${patch_count} FreeBSD patches"
 
-    # Backup original pkg-fetch patch
+      if [ "${patch_count}" -eq 0 ]; then
+        echo "ERROR: No FreeBSD node${NODE_MAJOR} patches found"
+        exit 1
+      fi
+
+    # Backup and modify pkg-fetch patch
     - cd node_modules/@yao-pkg/pkg-fetch/patches
     - cp "node.v${NODE_VERSION}.cpp.patch" "node.v${NODE_VERSION}.cpp.patch.orig"
 
@@ -299,7 +341,7 @@ build_npm_cache_task:
     - echo "  Generating patch-package diff..."
     - npx patch-package "@yao-pkg/pkg-fetch"
 
-    # Process and create final patch
+    # Process and save
     - cd patches
     - PATCH_FILE=$(ls @yao-pkg+pkg-fetch+*.patch 2>/dev/null | head -1)
     - UPSTREAM_URL="https://github.com/yao-pkg/pkg-fetch/raw/v${PKG_FETCH_VERSION}/patches/node.v${NODE_VERSION}.cpp.patch"
@@ -313,9 +355,7 @@ build_npm_cache_task:
 
     # Verify
     - cd "${CIRRUS_WORKING_DIR}"
-    - |
-      line_count=$(wc -l < "extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch")
-      echo "--- Patch generated: ${line_count} lines ---"
+    - echo "--- Patch generated: $(wc -l < extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch) lines ---"
 
   smoke_test_script:
     - echo "--- Smoke-testing Phase 2 cache offline ---"
@@ -367,32 +407,11 @@ build_npm_cache_task:
       dir_count=$(wc -l < /tmp/npm-dirs.txt)
       echo "  Directories cached: ${dir_count}"
     - |
-      lockfile_count=$(ls /tmp/lockfiles/*.json 2>/dev/null | wc -l)
+      lockfile_count=$(find lockfiles -name package-lock.json 2>/dev/null | wc -l)
       echo "  Lockfiles generated: ${lockfile_count}"
     - echo ""
     - echo "Two-phase optimization complete!"
-
-  commit_lockfiles_script:
-    - echo "--- Committing generated package-lock.json files ---"
-    - |
-      # Create directory structure in repo
-      mkdir -p lockfiles
-
-      # Copy all generated lockfiles
-      lockfile_count=0
-      while IFS= read -r npm_dir; do
-        if [ -f "${npm_dir}/package-lock.json" ]; then
-          # Preserve directory structure
-          rel_path="${npm_dir#src/}"
-          target_dir="lockfiles/${rel_path}"
-          mkdir -p "${target_dir}"
-          cp "${npm_dir}/package-lock.json" "${target_dir}/package-lock.json"
-          lockfile_count=$((lockfile_count + 1))
-          echo "  Saved: ${rel_path}/package-lock.json"
-        fi
-      done < /tmp/npm-dirs.txt
-
-      echo "  Total lockfiles saved: ${lockfile_count}"
+    - echo "Cache includes ONLY exact versions from generated lockfiles"
 
   commit_script:
     - DATE=$(date -u +%Y%m%d%H)
@@ -404,12 +423,20 @@ build_npm_cache_task:
     - cp -r "${NPM_CACHE}/_cacache" _cacache
     - cp src/yao-pkg/package.json      yao-pkg-package.json
     - cp src/yao-pkg/package-lock.json yao-pkg-package-lock.json
+
+    # Add all artifacts including lockfiles
     - git add _cacache lockfiles/ yao-pkg-package.json yao-pkg-package-lock.json "extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
-    - git commit -m "npm cache (TWO-PHASE OPTIMIZED) for OnlyOffice DS ${DS_TAG} (${DATE})"
-    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} two-phase optimized cache (${DATE})"
+    - git commit -m "npm cache + lockfiles for OnlyOffice DS ${DS_TAG} (${DATE})"
+    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} cache + lockfiles (${DATE})"
     - git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${CIRRUS_REPO_FULL_NAME}.git" HEAD --tags
     - echo ""
     - echo "✓ Successfully pushed tag ${NEW_TAG}"
+    - echo ""
+    - echo "Artifacts committed:"
+    - echo "  - _cacache/ (~300-400MB optimized cache)"
+    - echo "  - lockfiles/ (generated package-lock.json files)"
+    - echo "  - yao-pkg manifests"
+    - echo "  - extra-patch-pkg-fetch patch"
     - echo ""
     - echo "Update your port GH_TUPLE to:"
     - echo "  fsbruva:onlyoffice-DS-npm-cache:${NEW_TAG}:npm_cache"
