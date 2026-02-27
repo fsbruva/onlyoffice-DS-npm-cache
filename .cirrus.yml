@@ -60,7 +60,7 @@ build_npm_cache_task:
         https://github.com/ONLYOFFICE/server.git src/server
     - git clone --depth 1 --branch "${DS_TAG}" --single-branch
         https://github.com/ONLYOFFICE/sdkjs.git src/sdkjs
-   - git clone --depth 1 --branch "${DS_TAG}" --single-branch
+    - git clone --depth 1 --branch "${DS_TAG}" --single-branch
         https://github.com/ONLYOFFICE/document-server-integration.git src/document-server-integration
     - echo "=== web-apps ===" && git -C src/web-apps describe --tags
     - echo "=== server    ===" && git -C src/server  describe --tags
