@@ -17,7 +17,7 @@ env:
   YAO_PKG_VER:         "6.14.1"
 
   # Tier selection: 1 (minimal), 2 (recommended), 3 (safe), 4 (full)
-  CACHE_TIER:          "2"
+  CACHE_TIER:          "3"
 
   GITHUB_TOKEN: ENCRYPTED[cb63ddb701139b4dac8e4493476ef1ae09fa0078c69f2c153d968d93106a48a2263a08a5337848cc5d2641531b40e2fc]
 
@@ -478,7 +478,7 @@ build_npm_cache_task:
     - echo "Tier ${CACHE_TIER} optimization complete!"
 
   commit_script:
-    - DATE=$(date -u +%Y%m%d%H)
+    - DATE=$(date -u +%Y%m%d_%H%M)
     - NEW_TAG="${DS_TAG}-${DATE}-CI"
     - echo "Committing as tag ${NEW_TAG}"
     - rm -rf "${NPM_CACHE}/_logs"
