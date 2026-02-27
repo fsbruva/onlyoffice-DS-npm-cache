@@ -1,18 +1,12 @@
 # .cirrus.yml
 #
-# SINGLE-PHASE TIERED CACHE BUILD
-#
-# Approach:
-#   1. Delete npm-shrinkwrap.json files
-#   2. Install all selected directories (generates lockfiles + builds cache)
-#   3. Capture lockfiles from shrinkwrap directories
-#   4. Commit: cache + lockfiles
+# TWO-PHASE CACHE BUILD with TIERED DIRECTORY SELECTION
 #
 # CACHE_TIER controls which directories are cached:
-#   Tier 1: Makefile-explicit only (~6 dirs)
-#   Tier 2: Shrinkwrap + Makefile-explicit (~10 dirs) - RECOMMENDED
-#   Tier 3: Add common subdirectories (~14 dirs)
-#   Tier 4: Full discovery (~23 dirs)
+#   Tier 1: Makefile-explicit only (~5-6 dirs) - may fail, worth testing
+#   Tier 2: Shrinkwrap + Makefile-explicit (~10 dirs) - RECOMMENDED, matches 160MB empirical result
+#   Tier 3: Add common subdirectories (~15 dirs) - fallback if Tier 2 fails
+#   Tier 4: Full discovery (~23 dirs) - current approach, known to work but bloated
 
 env:
   DS_VERSION:          "9.3.0"
@@ -29,11 +23,12 @@ env:
 
   DS_TAG: "v${DS_VERSION}.${DS_BUILD}"
   NPM_CACHE: "/tmp/npm-cache"
-  NPM_CACHE_NPX: "/tmp/npx-cache"
+  NPM_CACHE_PHASE1: "/tmp/npm-cache-phase1"
+  NPM_CACHE_NPX: "/tmp/npm-cache-npx"
   PORTS_BASE: "https://cgit.freebsd.org/ports/plain/www/onlyoffice-documentserver"
 
 build_npm_cache_task:
-  name: "Build npm Cache (Single-Phase Tier ${CACHE_TIER})"
+  name: "Build npm Cache (Two-Phase Tier ${CACHE_TIER})"
   trigger_type: manual
 
   freebsd_instance:
@@ -45,11 +40,8 @@ build_npm_cache_task:
   timeout_in: 60m
 
   install_script:
-    # Extract node major version from NODE_VERSION
     - NODE_MAJOR=$(echo "${NODE_VERSION}" | cut -d'.' -f1)
-    - echo "Node major version: ${NODE_MAJOR}"
-    - echo "Installing npm-node${NODE_MAJOR}..."
-    - pkg install -y "npm-node${NODE_MAJOR}" git
+    - pkg install -y npm-node"${NODE_MAJOR}" git
     - node --version
     - npm --version
 
@@ -68,9 +60,12 @@ build_npm_cache_task:
         https://github.com/ONLYOFFICE/server.git src/server
     - git clone --depth 1 --branch "${DS_TAG}" --single-branch
         https://github.com/ONLYOFFICE/sdkjs.git src/sdkjs
+   - git clone --depth 1 --branch "${DS_TAG}" --single-branch
+        https://github.com/ONLYOFFICE/document-server-integration.git src/document-server-integration
     - echo "=== web-apps ===" && git -C src/web-apps describe --tags
     - echo "=== server    ===" && git -C src/server  describe --tags
     - echo "=== sdkjs     ===" && git -C src/sdkjs   describe --tags
+    - echo "=== integration ===" && git -C src/document-server-integration describe --tags
 
   apply_patches_script:
     - echo "--- Fetching FreeBSD port patches ---"
@@ -124,20 +119,21 @@ build_npm_cache_task:
     - |
       case "${CACHE_TIER}" in
         1)
-          echo "  Tier 1: Makefile-explicit only (minimal)"
+          echo "  Tier 1: Makefile-explicit only (minimal, may fail)"
           cat > /tmp/npm-dirs.txt << 'EOF'
       src/web-apps/build
       src/server
       src/server/DocService
       src/server/Metrics
       src/sdkjs/build
+      src/document-server-integration/web/documentserver-example/nodejs
       src/yao-pkg
       EOF
           ;;
 
         2)
           echo "  Tier 2: Makefile-explicit + shrinkwrap dirs (RECOMMENDED)"
-          echo "  Expected: ~250MB cache"
+          echo "  Expected: ~160MB cache, matches empirical result"
           cat > /tmp/npm-dirs.txt << 'EOF'
       src/web-apps/build
       src/server
@@ -148,13 +144,14 @@ build_npm_cache_task:
       src/server/SpellChecker
       src/sdkjs/build
       src/web-apps/vendor/framework7-react
+      src/document-server-integration/web/documentserver-example/nodejs
       src/yao-pkg
       EOF
           ;;
 
         3)
-          echo "  Tier 3: Include subdirectories (safe fallback)"
-          echo "  Expected: ~280MB cache"
+          echo "  Tier 3: Include known subdirectories (safe fallback)"
+          echo "  Expected: ~250MB cache"
           cat > /tmp/npm-dirs.txt << 'EOF'
       src/web-apps/build
       src/web-apps/build/sprites
@@ -169,16 +166,17 @@ build_npm_cache_task:
       src/web-apps/vendor/backbone
       src/web-apps/vendor/framework7-react
       src/web-apps/vendor/underscore
+      src/document-server-integration/web/documentserver-example/nodejs
       src/yao-pkg
       EOF
           ;;
 
         4)
-          echo "  Tier 4: Full discovery (all directories)"
-          echo "  Expected: ~295MB cache"
+          echo "  Tier 4: Full discovery (all directories, known bloated)"
+          echo "  Expected: ~295MB cache, 10,228 files"
           find src -type f -name package.json \
             ! -path "*/v8_89/*" \
-            ! -path "*/document-server-integration/*" \
+            ! -path "*/document-server-integration/php-laravel/*" \
             ! -path "*/document-server-package/*" \
             ! -path "*/onlyoffice.github.io/*" \
             ! -path "*/perfect-scrollbar/*" \
@@ -196,24 +194,24 @@ build_npm_cache_task:
       cat /tmp/npm-dirs.txt | sed 's|^src/|    |'
 
   # ================================================================== #
-  # SINGLE PHASE: Cache all directories and generate lockfiles        #
+  # PHASE 1: DISCOVERY - Generate optimal package-lock.json files     #
   # ================================================================== #
-  cache_all_dirs_script:
+  phase1_discovery_script:
     - echo "========================================"
-    - echo "CACHING ALL DIRECTORIES"
+    - echo "PHASE 1: DISCOVERY - Generating Lockfiles"
     - echo "========================================"
     - |
       dir_count=$(wc -l < /tmp/npm-dirs.txt)
-      echo "  Processing ${dir_count} directories..."
+      echo "  Processing ${dir_count} directories to generate package-lock.json..."
+      echo "  (This phase caches many versions during resolution)"
 
       success=0
-      failed=0
 
       while IFS= read -r npm_dir; do
         if [ -f "${npm_dir}/package.json" ]; then
           dir_name="${npm_dir#src/}"
 
-          if npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix "${npm_dir}" "${npm_dir}" 2>&1 | grep -v "^npm warn" > /dev/null; then
+          if npm install --cache "${NPM_CACHE_PHASE1}" --ignore-scripts --prefix "${npm_dir}" "${npm_dir}" 2>&1 | grep -v "^npm warn" > /dev/null; then
             success=$((success + 1))
 
             if [ -f "${npm_dir}/package-lock.json" ]; then
@@ -223,47 +221,26 @@ build_npm_cache_task:
             fi
           else
             echo "  ✗ ${dir_name} (install failed)"
-            failed=$((failed + 1))
           fi
         fi
       done < /tmp/npm-dirs.txt
 
       echo ""
-      echo "--- Install summary ---"
-      echo "  Success: ${success}"
-      echo "  Failed: ${failed}"
-      echo "  Total: ${dir_count}"
-      
-      if [ ${failed} -gt 0 ]; then
-        echo "WARNING: ${failed} directories failed (continuing anyway)"
-      fi
+      echo "--- Phase 1 complete ---"
+      echo "  Processed: ${success}/${dir_count} directories"
 
-  port_specific_deps_script:
-    - echo "--- Installing port-specific dependencies ---"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build patch-package
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build optipng-bin@5.1.0
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server grunt-cli
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server grunt
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService patch-package
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics "modern-syslog@${MODERN_SYSLOG_VER}"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics patch-package
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt-cli
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt
-
-  cache_yao_pkg_script:
-    - echo "--- Caching yao-pkg ---"
-    - mkdir -p src/yao-pkg
-    - |
-      cat > src/yao-pkg/package.json << 'EOF'
-      {
-        "name": "yao-pkg-cache-seed",
-        "version": "1.0.0",
-        "private": true,
-        "dependencies": {}
-      }
-      EOF
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
+  phase1_port_deps_script:
+    - echo "--- Phase 1: Port-specific dependencies ---"
+    - npm install --cache "${NPM_CACHE_PHASE1}" --ignore-scripts --prefix src/web-apps/build patch-package
+    - npm install --cache "${NPM_CACHE_PHASE1}" --ignore-scripts --prefix src/web-apps/build optipng-bin@5.1.0
+    - npm install --cache "${NPM_CACHE_PHASE1}" --ignore-scripts --prefix src/server grunt-cli
+    - npm install --cache "${NPM_CACHE_PHASE1}" --ignore-scripts --prefix src/server grunt
+    - npm install --cache "${NPM_CACHE_PHASE1}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
+    - npm install --cache "${NPM_CACHE_PHASE1}" --ignore-scripts --prefix src/server/DocService patch-package
+    - npm install --cache "${NPM_CACHE_PHASE1}" --ignore-scripts --prefix src/server/Metrics "modern-syslog@${MODERN_SYSLOG_VER}"
+    - npm install --cache "${NPM_CACHE_PHASE1}" --ignore-scripts --prefix src/server/Metrics patch-package
+    - npm install --cache "${NPM_CACHE_PHASE1}" --ignore-scripts --prefix src/sdkjs grunt-cli
+    - npm install --cache "${NPM_CACHE_PHASE1}" --ignore-scripts --prefix src/sdkjs grunt
 
   capture_lockfiles_script:
     - echo "--- Capturing lockfiles (only from shrinkwrap directories) ---"
@@ -283,6 +260,88 @@ build_npm_cache_task:
       done < /tmp/shrinkwrap-dirs.txt
 
       echo "  Total lockfiles captured: ${lockfile_count}"
+
+  phase1_report_script:
+    - echo "--- Phase 1 Cache Statistics ---"
+    - |
+      if [ -d "${NPM_CACHE_PHASE1}/_cacache" ]; then
+        file_count=$(find "${NPM_CACHE_PHASE1}/_cacache" -type f | wc -l)
+        cache_size=$(du -sh "${NPM_CACHE_PHASE1}/_cacache" | awk '{print $1}')
+        echo "  Phase 1 cache size: ${cache_size}"
+        echo "  Phase 1 cache files: ${file_count}"
+        echo "  (Includes many versions during resolution - will be discarded)"
+      fi
+
+  # ================================================================== #
+  # PHASE 2: OPTIMIZED REBUILD - Cache only exact versions            #
+  # ================================================================== #
+  phase2_prepare_script:
+    - echo "========================================"
+    - echo "PHASE 2: OPTIMIZED REBUILD"
+    - echo "========================================"
+    - echo "--- Removing Phase 1 cache ---"
+    - rm -rf "${NPM_CACHE_PHASE1}"
+    - echo "  ✓ Phase 1 cache removed"
+    - echo ""
+    - echo "--- Removing node_modules from all directories ---"
+    - |
+      while IFS= read -r npm_dir; do
+        rm -rf "${npm_dir}/node_modules"
+      done < /tmp/npm-dirs.txt
+    - echo "  ✓ All node_modules removed"
+
+  phase2_rebuild_script:
+    - echo "--- Phase 2: Rebuilding cache with lockfiles ---"
+    - |
+      dir_count=$(wc -l < /tmp/npm-dirs.txt)
+      echo "  Processing ${dir_count} directories..."
+      echo "  (Caches ONLY exact versions from lockfiles)"
+
+      success=0
+
+      while IFS= read -r npm_dir; do
+        if [ -f "${npm_dir}/package.json" ]; then
+          dir_name="${npm_dir#src/}"
+
+          if npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix "${npm_dir}" "${npm_dir}" 2>&1 | grep -v "^npm warn" > /dev/null; then
+            success=$((success + 1))
+          else
+            echo "  ✗ ${dir_name} (rebuild failed)"
+          fi
+        fi
+      done < /tmp/npm-dirs.txt
+
+      echo ""
+      echo "--- Phase 2 complete ---"
+      echo "  Rebuilt: ${success}/${dir_count} directories"
+
+  phase2_port_deps_script:
+    - echo "--- Phase 2: Port-specific dependencies ---"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build patch-package
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build optipng-bin@5.1.0
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server grunt-cli
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server grunt
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService patch-package
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics "modern-syslog@${MODERN_SYSLOG_VER}"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics patch-package
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt-cli
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt
+
+  # yao-pkg needs special handling - always cache regardless of tier
+  cache_yao_pkg_script:
+    - echo "--- Caching yao-pkg (always included) ---"
+    - mkdir -p src/yao-pkg
+    - |
+      cat > src/yao-pkg/package.json << 'EOF'
+      {
+        "name": "yao-pkg-cache-seed",
+        "version": "1.0.0",
+        "private": true,
+        "dependencies": {}
+      }
+      EOF
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
 
   generate_pkg_fetch_patch_script:
     - echo "--- Generating pkg-fetch FreeBSD node patch ---"
@@ -416,17 +475,17 @@ build_npm_cache_task:
       cache_size=$(du -sh "${NPM_CACHE}/_cacache" | awk '{print $1}')
       echo "  Total size: ${cache_size}"
     - |
-      dir_count=$(wc -l < /tmp/npm-dirs.txt)
+      dir_count=$(wc -l < /tmp/shrinkwrap-dirs.txt)
       echo "  Directories cached: ${dir_count}"
     - |
       lockfile_count=$(find lockfiles -name package-lock.json 2>/dev/null | wc -l)
       echo "  Lockfiles preserved: ${lockfile_count}"
     - echo ""
-    - echo "Single-phase Tier ${CACHE_TIER} complete!"
+    - echo "Tier ${CACHE_TIER} optimization complete!"
 
   commit_script:
     - DATE=$(date -u +%Y%m%d%H)
-    - NEW_TAG="${DS_TAG}-${DATE}-tier${CACHE_TIER}"
+    - NEW_TAG="${DS_TAG}-${DATE}-CI"
     - echo "Committing as tag ${NEW_TAG}"
     - rm -rf "${NPM_CACHE}/_logs"
     - rm -rf "${NPM_CACHE}/_update-notifier-last-checked"
@@ -439,7 +498,7 @@ build_npm_cache_task:
 
     - git add _cacache lockfiles/ yao-pkg-package.json yao-pkg-package-lock.json "extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
     - git commit -m "npm cache Tier ${CACHE_TIER} for OnlyOffice DS ${DS_TAG} (${DATE})"
-    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} Tier ${CACHE_TIER} single-phase cache (${DATE})"
+    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} Tier ${CACHE_TIER} cache (${DATE})"
     - git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${CIRRUS_REPO_FULL_NAME}.git" HEAD --tags
     - echo ""
     - echo "✓ Successfully pushed tag ${NEW_TAG}"
