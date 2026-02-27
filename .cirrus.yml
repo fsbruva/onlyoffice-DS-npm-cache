@@ -29,7 +29,7 @@ env:
 
   DS_TAG: "v${DS_VERSION}.${DS_BUILD}"
   NPM_CACHE: "/tmp/npm-cache"
-  NP_CACHE_NPX: "/tmp/npx-cache"
+  NPM_CACHE_NPX: "/tmp/npx-cache"
   PORTS_BASE: "https://cgit.freebsd.org/ports/plain/www/onlyoffice-documentserver"
 
 build_npm_cache_task:
@@ -267,14 +267,14 @@ build_npm_cache_task:
 
   capture_lockfiles_script:
     - echo "--- Capturing lockfiles (only from shrinkwrap directories) ---"
-    - mkdir -p lockfiles
+    - mkdir -p src/lockfiles
     - |
       lockfile_count=0
       while IFS= read -r shrinkwrap_dir; do
         npm_dir="${shrinkwrap_dir}"
         if [ -f "${npm_dir}/package-lock.json" ]; then
           rel_path="${npm_dir#src/}"
-          target_dir="lockfiles/${rel_path}"
+          target_dir="src/lockfiles/${rel_path}"
           mkdir -p "${target_dir}"
           cp "${npm_dir}/package-lock.json" "${target_dir}/package-lock.json"
           lockfile_count=$((lockfile_count + 1))
@@ -431,7 +431,9 @@ build_npm_cache_task:
     - rm -rf "${NPM_CACHE}/_logs"
     - rm -rf "${NPM_CACHE}/_update-notifier-last-checked"
     - rm -rf _cacache
+    - rm -rf lockfiles
     - cp -r "${NPM_CACHE}/_cacache" _cacache
+    - cp -r "src/lockfiles" lockfiles
     - cp src/yao-pkg/package.json      yao-pkg-package.json
     - cp src/yao-pkg/package-lock.json yao-pkg-package-lock.json
 
