@@ -238,14 +238,14 @@ build_npm_cache_task:
 
   capture_lockfiles_script:
     - echo "--- Capturing lockfiles (only from shrinkwrap directories) ---"
-    - mkdir -p lockfiles
+    - mkdir -p src/lockfiles
     - |
       lockfile_count=0
       while IFS= read -r shrinkwrap_dir; do
         npm_dir="${shrinkwrap_dir}"
         if [ -f "${npm_dir}/package-lock.json" ]; then
           rel_path="${npm_dir#src/}"
-          target_dir="lockfiles/${rel_path}"
+          target_dir="src/lockfiles/${rel_path}"
           mkdir -p "${target_dir}"
           cp "${npm_dir}/package-lock.json" "${target_dir}/package-lock.json"
           lockfile_count=$((lockfile_count + 1))
@@ -469,7 +469,7 @@ build_npm_cache_task:
       cache_size=$(du -sh "${NPM_CACHE}/_cacache" | awk '{print $1}')
       echo "  Total size: ${cache_size}"
     - |
-      dir_count=$(wc -l < /tmp/npm-dirs.txt)
+      dir_count=$(wc -l < /tmp/shrinkwrap-dirs.txt)
       echo "  Directories cached: ${dir_count}"
     - |
       lockfile_count=$(find lockfiles -name package-lock.json 2>/dev/null | wc -l)
@@ -479,12 +479,14 @@ build_npm_cache_task:
 
   commit_script:
     - DATE=$(date -u +%Y%m%d%H)
-    - NEW_TAG="${DS_TAG}-${DATE}-tier${CACHE_TIER}"
+    - NEW_TAG="${DS_TAG}-${DATE}-CI"
     - echo "Committing as tag ${NEW_TAG}"
     - rm -rf "${NPM_CACHE}/_logs"
     - rm -rf "${NPM_CACHE}/_update-notifier-last-checked"
     - rm -rf _cacache
+    - rm -rf lockfiles
     - cp -r "${NPM_CACHE}/_cacache" _cacache
+    - cp -r "src/lockfiles" lockfiles
     - cp src/yao-pkg/package.json      yao-pkg-package.json
     - cp src/yao-pkg/package-lock.json yao-pkg-package-lock.json
 
