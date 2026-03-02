@@ -134,6 +134,7 @@ build_npm_cache_task:
           cat > /tmp/npm-dirs.txt << 'EOF'
       src/web-apps/build
       src/server
+      src/server/Common
       src/server/DocService
       src/server/FileConverter
       src/server/Metrics
