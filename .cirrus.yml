@@ -278,7 +278,7 @@ build_npm_cache_task:
       while IFS= read -r server_dir; do
         if [ -f "${server_dir}/package-lock.json" ]; then
           rel_path="${server_dir#src/}"
-          target_dir="src/lockfiles/server/${rel_path}"
+          target_dir="src/lockfiles/${rel_path}"
           mkdir -p "${target_dir}"
           cp "${server_dir}/package-lock.json" "${target_dir}/package-lock.json"
           lockfile_count=$((lockfile_count + 1))
