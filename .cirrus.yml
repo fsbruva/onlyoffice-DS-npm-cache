@@ -133,6 +133,7 @@ build_npm_cache_task:
           echo "  Tier 1: Makefile-explicit only (minimal)"
           cat > /tmp/npm-dirs.txt << 'EOF'
       src/web-apps/build
+      src/web-apps/vendor/framework7-react
       src/server
       src/server/Common
       src/server/DocService
