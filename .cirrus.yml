@@ -139,7 +139,6 @@ build_npm_cache_task:
       src/server/DocService
       src/server/FileConverter
       src/server/Metrics
-      src/server/SpellChecker
       src/sdkjs/build
       src/document-server-integration/web/documentserver-example/nodejs
       src/document-server-package/common/documentserver/home/npm
