@@ -69,10 +69,13 @@ build_npm_cache_task:
         https://github.com/ONLYOFFICE/sdkjs.git src/sdkjs
     - git clone --depth 1 --branch "${DS_TAG}" --single-branch
         https://github.com/ONLYOFFICE/document-server-integration.git src/document-server-integration
+    - git clone --depth 1 --branch "${DS_TAG}" --single-branch
+        https://github.com/ONLYOFFICE/document-server-package.git src/document-server-package
     - echo "=== web-apps ===" && git -C src/web-apps describe --tags
     - echo "=== server    ===" && git -C src/server  describe --tags
     - echo "=== sdkjs     ===" && git -C src/sdkjs   describe --tags
     - echo "=== integration ===" && git -C src/document-server-integration describe --tags
+    - echo "=== server-package  ===" && git -C src/document-server-package describe --tags
 
   apply_patches_script:
     - echo "--- Fetching FreeBSD port patches ---"
@@ -135,6 +138,7 @@ build_npm_cache_task:
       src/server/Metrics
       src/sdkjs/build
       src/document-server-integration/web/documentserver-example/nodejs
+      src/document-server-package/common/documentserver/home/npm
       src/yao-pkg
       EOF
           ;;
@@ -153,6 +157,7 @@ build_npm_cache_task:
       src/sdkjs/build
       src/web-apps/vendor/framework7-react
       src/document-server-integration/web/documentserver-example/nodejs
+      src/document-server-package/common/documentserver/home/npm
       src/yao-pkg
       EOF
           ;;
@@ -175,6 +180,7 @@ build_npm_cache_task:
       src/web-apps/vendor/framework7-react
       src/web-apps/vendor/underscore
       src/document-server-integration/web/documentserver-example/nodejs
+      src/document-server-package/common/documentserver/home/npm
       src/yao-pkg
       EOF
           ;;
