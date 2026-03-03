@@ -209,6 +209,33 @@ build_npm_cache_task:
       echo "  Selected ${dir_count} directories for caching:"
       cat /tmp/npm-dirs.txt | sed 's|^src/|    |'
 
+  port_specific_deps_script:
+    - echo "--- Installing port-specific dependencies ---"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build patch-package
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build optipng-bin@5.1.0
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server grunt-cli
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server grunt
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService patch-package
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics "modern-syslog@${MODERN_SYSLOG_VER}"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics patch-package
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt-cli
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt
+
+  cache_yao_pkg_script:
+    - echo "--- Caching yao-pkg ---"
+    - mkdir -p src/yao-pkg
+    - |
+      cat > src/yao-pkg/package.json << 'EOF'
+      {
+        "name": "yao-pkg-cache-seed",
+        "version": "1.0.0",
+        "private": true,
+        "dependencies": {}
+      }
+      EOF
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
+
   # ================================================================== #
   # SINGLE PHASE: Cache all directories and generate lockfiles        #
   # ================================================================== #
@@ -251,33 +278,6 @@ build_npm_cache_task:
       if [ ${failed} -gt 0 ]; then
         echo "WARNING: ${failed} directories failed (continuing anyway)"
       fi
-
-  port_specific_deps_script:
-    - echo "--- Installing port-specific dependencies ---"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build patch-package
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build optipng-bin@5.1.0
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server grunt-cli
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server grunt
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService patch-package
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics "modern-syslog@${MODERN_SYSLOG_VER}"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics patch-package
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt-cli
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt
-
-  cache_yao_pkg_script:
-    - echo "--- Caching yao-pkg ---"
-    - mkdir -p src/yao-pkg
-    - |
-      cat > src/yao-pkg/package.json << 'EOF'
-      {
-        "name": "yao-pkg-cache-seed",
-        "version": "1.0.0",
-        "private": true,
-        "dependencies": {}
-      }
-      EOF
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
 
   capture_lockfiles_script:
     - echo "--- Capturing lockfiles (only from server/* directories) ---"
