@@ -15,8 +15,8 @@
 #   - All other dirs         : no shrinkwrap present
 
 env:
-  DS_VERSION:          "9.3.0"
-  DS_BUILD:            "138"
+  DS_VERSION:          "9.3.1"
+  DS_BUILD:            "8"
   NODE_VERSION:        "20.20.0"
   SHARP_VER:           "0.32.6"
   MODERN_SYSLOG_VER:   "1.2.0"
