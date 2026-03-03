@@ -140,7 +140,6 @@ build_npm_cache_task:
       src/server/FileConverter
       src/server/Metrics
       src/sdkjs/build
-      src/document-server-integration/web/documentserver-example/nodejs
       src/document-server-package/common/documentserver/home/npm
       src/yao-pkg
       EOF
