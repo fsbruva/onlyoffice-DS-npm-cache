@@ -108,16 +108,11 @@ build_npm_cache_task:
     # Only delete shrinkwrap for server/* — sdkjs/build and framework7-react keep their shrinkwrap (pinned, unpatched).
     # Within server/*, only 3 dirs are actually patched, but we delete all shrinkwrap files
     # there so npm regenerates consistent lockfiles across the whole server subtree.
-    - echo "--- Deleting npm-shrinkwrap.json files (server/* only) ---"
+    - echo "--- Deleting npm-shrinkwrap.json files (server and server/Docservice only) ---"
     - |
-      find src/server -type f -name npm-shrinkwrap.json \
-        -exec dirname {} \; | sort -u > /tmp/shrinkwrap-dirs.txt
-
-      dir_count=$(wc -l < /tmp/shrinkwrap-dirs.txt)
-      cat /tmp/shrinkwrap-dirs.txt | sed 's|^src/|    |'
-      echo "  Found ${dir_count} shrinkwrap directories in server"
-    - find src/server -type f -name npm-shrinkwrap.json -delete
-    - echo "  ✓ server/* shrinkwrap deleted — sdkjs/build and web-apps/vendor/framework7-react shrinkwrap retained"
+      rm src/server/npm-shrinkwrap.json
+    - rm src/server/DocService/npm-shrinkwrap.json
+    - echo "  ✓ server/shrinkwrap and server/DocService deleted — all other shrinkwraps retained"
 
   # ================================================================== #
   # PHASE 1: Shrinkwrap-pinned dirs                                    #
@@ -134,6 +129,9 @@ build_npm_cache_task:
       SHRINKWRAP_DIRS="
       src/sdkjs/build
       src/web-apps/vendor/framework7-react
+      src/server/Common
+      src/server/FileConverter
+      src/server/Metrics
       "
 
       for npm_dir in ${SHRINKWRAP_DIRS}; do
@@ -151,12 +149,12 @@ build_npm_cache_task:
         fi
       done
 
-  # ================================================================== #
-  # PHASE 2: Upstream dirs (server/*, web-apps/build, home/npm)       #
-  # These run after the pinned baseline so shared deps are already     #
-  # cached. server/* has no shrinkwrap so npm re-resolves and writes   #
-  # package-lock.json files.                                           #
-  # ================================================================== #
+  # ======================================================================= #
+  # PHASE 2: Upstream dirs (server & DocService}, web-apps/build, home/npm) #
+  # These run after the pinned baseline so shared deps are already          #
+  # cached. server and server/DocService have no shrinkwrap so npm          #
+  # re-resolves and writes package-lock.json files.                         #
+  # ======================================================================= #
   cache_upstream_dirs_script:
     - echo "========================================"
     - echo "PHASE 2a: UPSTREAM DIRS (full deps)"
@@ -167,9 +165,7 @@ build_npm_cache_task:
       UPSTREAM_DIRS="
       src/web-apps/build
       src/server
-      src/server/Common
       src/server/DocService
-      src/server/FileConverter
       src/document-server-package/common/documentserver/home/npm
       "
 
@@ -224,25 +220,6 @@ build_npm_cache_task:
         echo "  SKIP: ${INTEGRATION_DIR}/package.json not found"
       fi
 
-    - echo "========================================"
-    - echo "PHASE 2c: METRICS (--omit=optional)"
-    - echo "========================================"
-    # modern-syslog is optional, but not used by onlyoffice  — not needed at build time.
-    # --omit=optional keeps them out of the build
-    - |
-      METRICS_DIR="src/server/Metrics"
-      if [ -f "${METRICS_DIR}/package.json" ]; then
-        npm install \
-          --cache "${NPM_CACHE}" \
-          --ignore-scripts \
-          --omit=optional \
-          --prefix "${METRICS_DIR}" \
-          statsd 2>&1 | grep -v "^npm warn"
-        echo "  ✓ server/Metrics (optionalDeps omitted)"
-      else
-        echo "  SKIP: ${METRICS_DIR}/package.json not found"
-      fi
-
   # ================================================================== #
   # PHASE 3: Port-specific dependencies                                #
   # Installed INTO the same prefix dirs as above, so they layer on     #
@@ -265,8 +242,6 @@ build_npm_cache_task:
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService patch-package
     - echo "  server/DocService: sharp@${SHARP_VER}"
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
-    - echo "  server/Metrics: hashring"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics hashring
     - echo "  sdkjs: grunt-cli"
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt-cli
     - echo "  sdkjs: grunt"
@@ -388,6 +363,7 @@ build_npm_cache_task:
       src/server/Common
       src/server/DocService
       src/server/FileConverter
+      src/server/Metrics
       src/document-server-package/common/documentserver/home/npm
       "
 
@@ -415,17 +391,6 @@ build_npm_cache_task:
         success=$((success + 1))
       else
         echo "  ✗ FAILED: document-server-integration/nodejs"
-        failed=$((failed + 1))
-      fi
-
-      # Phase 2c — mirror --omit=optional
-      METRICS_DIR="src/server/Metrics"
-      rm -rf "${METRICS_DIR}/node_modules"
-      if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
-          --omit=optional --prefix "${METRICS_DIR}" statsd >/dev/null 2>&1; then
-        success=$((success + 1))
-      else
-        echo "  ✗ FAILED: server/Metrics"
         failed=$((failed + 1))
       fi
 
@@ -467,10 +432,9 @@ build_npm_cache_task:
       echo "  Lockfiles captured : ${lockfile_count} (server/* only)"
     - echo ""
     - echo "Install order:"
-    - echo "  1. sdkjs/build, vendor/framework7-react (shrinkwrap pinned — baseline)"
-    - echo "  2a. server/*, web-apps/build, home/npm  (upstream, full deps)"
+    - echo "  1. sdkjs/build, server/Common, server/Metrics, server/FileConverter, vendor/framework7-react (shrinkwrap pinned — baseline)"
+    - echo "  2a. server/, server/Docservice, web-apps/build, home/npm  (upstream, full deps)"
     - echo "  2b. document-server-integration         (upstream, --omit=dev)"
-    - echo "  2c. server/Metrics                      (upstream, --omit=optional)"
     - echo "  3. Port-specific deps    (grunt, sharp, optipng, etc.)"
     - echo "  4. yao-pkg               (self-contained)"
 
