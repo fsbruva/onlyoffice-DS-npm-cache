@@ -110,7 +110,13 @@ build_npm_cache_task:
     # there so npm regenerates consistent lockfiles across the whole server subtree.
     - echo "--- Deleting npm-shrinkwrap.json files (server and server/Docservice only) ---"
     - |
-      rm src/server/npm-shrinkwrap.json
+      find src/server -type f -name npm-shrinkwrap.json \
+        -exec dirname {} \; | sort -u > /tmp/shrinkwrap-dirs.txt
+
+      dir_count=$(wc -l < /tmp/shrinkwrap-dirs.txt)
+      cat /tmp/shrinkwrap-dirs.txt | sed 's|^src/|    |'
+      echo "  Found ${dir_count} shrinkwrap directories in server"
+    - rm src/server/npm-shrinkwrap.json
     - rm src/server/DocService/npm-shrinkwrap.json
     - echo "  ✓ server/shrinkwrap and server/DocService deleted — all other shrinkwraps retained"
 
