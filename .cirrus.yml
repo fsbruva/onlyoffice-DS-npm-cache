@@ -265,6 +265,8 @@ build_npm_cache_task:
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService patch-package
     - echo "  server/DocService: sharp@${SHARP_VER}"
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
+    - echo "  server/Metrics: hashring"
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics hashring
     - echo "  sdkjs: grunt-cli"
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt-cli
     - echo "  sdkjs: grunt"
