@@ -19,7 +19,6 @@ env:
   DS_BUILD:            "8"
   NODE_VERSION:        "20.20.0"
   SHARP_VER:           "0.32.6"
-  MODERN_SYSLOG_VER:   "1.2.0"
   YAO_PKG_VER:         "6.14.1"
 
   GITHUB_TOKEN: ENCRYPTED[cb63ddb701139b4dac8e4493476ef1ae09fa0078c69f2c153d968d93106a48a2263a08a5337848cc5d2641531b40e2fc]
@@ -171,7 +170,6 @@ build_npm_cache_task:
       src/server/Common
       src/server/DocService
       src/server/FileConverter
-      src/server/Metrics
       src/document-server-package/common/documentserver/home/npm
       "
 
@@ -226,6 +224,25 @@ build_npm_cache_task:
         echo "  SKIP: ${INTEGRATION_DIR}/package.json not found"
       fi
 
+    - echo "========================================"
+    - echo "PHASE 2c: METRICS (--omit=optional)"
+    - echo "========================================"
+    # modern-syslog is optional, but not used by onlyoffice  — not needed at build time.
+    # --omit=optional keeps them out of the build
+    - |
+      METRICS_DIR="src/server/Metrics"
+      if [ -f "${METRICS_DIR}/package.json" ]; then
+        npm install \
+          --cache "${NPM_CACHE}" \
+          --ignore-scripts \
+          --omit=optional \
+          --prefix "${METRICS_DIR}" \
+          "${METRICS_DIR}" 2>&1 | grep -v "^npm warn"
+        echo "  ✓ server/Metrics (optionalDeps omitted)"
+      else
+        echo "  SKIP: ${METRICS_DIR}/package.json not found"
+      fi
+
   # ================================================================== #
   # PHASE 3: Port-specific dependencies                                #
   # Installed INTO the same prefix dirs as above, so they layer on     #
@@ -248,10 +265,6 @@ build_npm_cache_task:
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService patch-package
     - echo "  server/DocService: sharp@${SHARP_VER}"
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
-    - echo "  server/Metrics: modern-syslog@${MODERN_SYSLOG_VER}"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics "modern-syslog@${MODERN_SYSLOG_VER}"
-    - echo "  server/Metrics: patch-package"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics patch-package
     - echo "  sdkjs: grunt-cli"
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt-cli
     - echo "  sdkjs: grunt"
@@ -373,7 +386,6 @@ build_npm_cache_task:
       src/server/Common
       src/server/DocService
       src/server/FileConverter
-      src/server/Metrics
       src/document-server-package/common/documentserver/home/npm
       "
 
@@ -401,6 +413,17 @@ build_npm_cache_task:
         success=$((success + 1))
       else
         echo "  ✗ FAILED: document-server-integration/nodejs"
+        failed=$((failed + 1))
+      fi
+
+      # Phase 2c — mirror --omit=optional
+      METRICS_DIR="src/server/Metrics"
+      rm -rf "${METRICS_DIR}/node_modules"
+      if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
+          --omit=optional --prefix "${METRICS_DIR}" "${METRICS_DIR}" >/dev/null 2>&1; then
+        success=$((success + 1))
+      else
+        echo "  ✗ FAILED: server/Metrics"
         failed=$((failed + 1))
       fi
 
@@ -445,6 +468,7 @@ build_npm_cache_task:
     - echo "  1. sdkjs/build, vendor/framework7-react (shrinkwrap pinned — baseline)"
     - echo "  2a. server/*, web-apps/build, home/npm  (upstream, full deps)"
     - echo "  2b. document-server-integration         (upstream, --omit=dev)"
+    - echo "  2c. server/Metrics                      (upstream, --omit=optional)"
     - echo "  3. Port-specific deps    (grunt, sharp, optipng, etc.)"
     - echo "  4. yao-pkg               (self-contained)"
 
