@@ -237,7 +237,7 @@ build_npm_cache_task:
           --ignore-scripts \
           --omit=optional \
           --prefix "${METRICS_DIR}" \
-          "${METRICS_DIR}" 2>&1 | grep -v "^npm warn"
+          statsd 2>&1 | grep -v "^npm warn"
         echo "  ✓ server/Metrics (optionalDeps omitted)"
       else
         echo "  SKIP: ${METRICS_DIR}/package.json not found"
@@ -422,7 +422,7 @@ build_npm_cache_task:
       METRICS_DIR="src/server/Metrics"
       rm -rf "${METRICS_DIR}/node_modules"
       if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
-          --omit=optional --prefix "${METRICS_DIR}" "${METRICS_DIR}" >/dev/null 2>&1; then
+          --omit=optional --prefix "${METRICS_DIR}" statsd >/dev/null 2>&1; then
         success=$((success + 1))
       else
         echo "  ✗ FAILED: server/Metrics"
