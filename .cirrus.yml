@@ -117,7 +117,9 @@ build_npm_cache_task:
       cat /tmp/shrinkwrap-dirs.txt | sed 's|^src/|    |'
       echo "  Found ${dir_count} shrinkwrap directories in server"
     - rm src/server/npm-shrinkwrap.json
+    - rm src/server/Common/npm-shrinkwrap.json
     - rm src/server/DocService/npm-shrinkwrap.json
+    - rm src/server/FileConverter/npm-shrinkwrap.json
     - echo "  ✓ server/shrinkwrap and server/DocService deleted — all other shrinkwraps retained"
 
   # ================================================================== #
@@ -135,8 +137,6 @@ build_npm_cache_task:
       SHRINKWRAP_DIRS="
       src/sdkjs/build
       src/web-apps/vendor/framework7-react
-      src/server/Common
-      src/server/FileConverter
       src/server/Metrics
       "
 
@@ -171,6 +171,8 @@ build_npm_cache_task:
       UPSTREAM_DIRS="
       src/web-apps/build
       src/server
+      src/server/Common
+      src/server/FileConverter
       src/server/DocService
       src/document-server-package/common/documentserver/home/npm
       "
