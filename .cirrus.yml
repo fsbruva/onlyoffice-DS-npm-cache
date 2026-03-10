@@ -275,8 +275,12 @@ build_npm_cache_task:
       }
       EOF
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/yao-pkg "@esbuild/freebsd-arm64"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/yao-pkg "@esbuild/freebsd-x64"
+    - |
+      for ARCH in x64 arm64; do
+        npm_config_platform=freebsd \
+        npm_config_arch=${ARCH} \
+        npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/yao-pkg "@esbuild/freebsd-${ARCH}"
+      done
     - echo "  ✓ yao-pkg cached"
 
   capture_lockfiles_script:
