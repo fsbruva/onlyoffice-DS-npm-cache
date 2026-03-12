@@ -116,7 +116,10 @@ build_npm_cache_task:
       dir_count=$(wc -l < /tmp/shrinkwrap-dirs.txt)
       cat /tmp/shrinkwrap-dirs.txt | sed 's|^src/|    |'
       echo "  Found ${dir_count} shrinkwrap directories in server"
-    - find src/server -type f -name npm-shrinkwrap.json -delete
+    - rm src/server/npm-shrinkwrap.json
+    - rm src/server/Common/npm-shrinkwrap.json
+    - rm src/server/DocService/npm-shrinkwrap.json
+    - rm src/server/FileConverter/npm-shrinkwrap.json
     - echo "  ✓ server/* shrinkwrap deleted — sdkjs/build and web-apps/vendor/framework7-react shrinkwrap retained"
 
   # ================================================================== #
