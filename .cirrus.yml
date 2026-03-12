@@ -235,7 +235,7 @@ build_npm_cache_task:
     - |
       METRICS_DIR="src/server/Metrics"
       if [ -f "${METRICS_DIR}/package.json" ]; then
-        npm ci \
+        npm install \
           --cache "${NPM_CACHE}" \
           --ignore-scripts \
           --prefix "${METRICS_DIR}" \
@@ -430,7 +430,7 @@ build_npm_cache_task:
       # Phase 2c — metrics run with npm ci
       METRICS_DIR="src/server/Metrics"
       rm -rf "${METRICS_DIR}/node_modules"
-      if npm ci --offline --cache "${NPM_CACHE}" --ignore-scripts \
+      if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
           --prefix "${METRICS_DIR}" "${METRICS_DIR}" >/dev/null 2>&1; then
         success=$((success + 1))
       else
