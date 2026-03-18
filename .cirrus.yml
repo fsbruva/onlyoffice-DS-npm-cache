@@ -327,7 +327,7 @@ build_npm_cache_task:
     - npm install --cache "${NPM_CACHE}" patch-package
     - npm install --cache "${NPM_CACHE}" "@yao-pkg/pkg@${YAO_PKG_VER}"
 
-    - PKG_FETCH_VERSION=$(cat node_modules/@yao-pkg/pkg/package.json | grep -A1 '"@yao-pkg/pkg-fetch"' | tail -1 | cut -d'"' -f4 | sed 's/\^//')
+    - PKG_FETCH_VERSION=$(grep '"@yao-pkg/pkg-fetch"' node_modules/@yao-pkg/pkg/package.json | cut -d'"' -f4 | sed 's/\^//')
     - echo "  pkg-fetch version: ${PKG_FETCH_VERSION}"
 
     - NODE_MAJOR=$(echo "${NODE_VERSION}" | cut -d'.' -f1)
@@ -359,7 +359,6 @@ build_npm_cache_task:
       fi
 
     - cd node_modules/@yao-pkg/pkg-fetch/patches
-    - cp "node.v${NODE_VERSION}.cpp.patch" "node.v${NODE_VERSION}.cpp.patch.orig"
     - |
       for patch_file in /tmp/patch-workspace/freebsd-patches/patch-*; do
         if [ -f "${patch_file}" ]; then
@@ -372,12 +371,17 @@ build_npm_cache_task:
 
     - cd patches
     - PATCH_FILE=$(ls @yao-pkg+pkg-fetch+*.patch 2>/dev/null | head -1)
-    - UPSTREAM_URL="https://github.com/yao-pkg/pkg-fetch/raw/v${PKG_FETCH_VERSION}/patches/node.v${NODE_VERSION}.cpp.patch"
+      if [ -z "${PATCH_FILE}" ]; then
+        echo "ERROR: patch-package produced no output file"
+        exit 1
+      fi
+
+    - UPSTREAM_URL="https://github.com/yao-pkg/pkg-fetch/raw/refs/tags/v${PKG_FETCH_VERSION}/patches/node.v${NODE_VERSION}.cpp.patch"
     - |
       {
         echo "${UPSTREAM_URL}"
         echo "+ local FreeBSD patches"
-        grep -v '^diff --git' "${PATCH_FILE}" | \
+        grep -v '^diff --git\|^index ' "${PATCH_FILE}" | \
           sed 's#^--- a/node_modules#--- yao-pkg/node_modules#g; s#^+++ b/node_modules#+++ yao-pkg/node_modules#g'
       } > "${CIRRUS_WORKING_DIR}/extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
 
