@@ -370,7 +370,8 @@ build_npm_cache_task:
     - npx patch-package "@yao-pkg/pkg-fetch"
 
     - cd patches
-    - PATCH_FILE=$(ls @yao-pkg+pkg-fetch+*.patch 2>/dev/null | head -1)
+    - |
+      PATCH_FILE=$(ls @yao-pkg+pkg-fetch+*.patch 2>/dev/null | head -1)
       if [ -z "${PATCH_FILE}" ]; then
         echo "ERROR: patch-package produced no output file"
         exit 1
