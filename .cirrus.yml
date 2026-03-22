@@ -37,7 +37,6 @@ env:
   DS_TAG: "v${DS_VERSION}.${DS_BUILD}"
   NPM_CACHE: "/tmp/npm-cache"
   TEMP_CACHE: "/tmp/temp-cache"
-  PORTS_BASE: "https://cgit.freebsd.org/ports/plain/www/onlyoffice-documentserver"
 
 build_npm_cache_task:
   name: "Build npm Cache (Two-Phase Optimized)"
@@ -83,12 +82,36 @@ build_npm_cache_task:
     - echo "=== integration ===" && git -C src/document-server-integration describe --tags
     - echo "=== ds-package  ===" && git -C src/document-server-package     describe --tags
 
-  fetch_patches_script:
-    - echo "--- Fetching FreeBSD port patches ---"
+  clone_ports_tree_script:
+    - echo "--- Cloning FreeBSD ports tree (shallow) ---"
+    - git clone --depth 1 https://github.com/freebsd/freebsd-ports.git /tmp/freebsd-ports
+    - echo "  ✓ Ports tree cloned to /tmp/freebsd-ports"
+
+  copy_patches_script:
+    - echo "--- Copying FreeBSD port patches from local clone ---"
     - mkdir -p patches
-    - fetch -o patches/patch-server_package.json "${PORTS_BASE}/files/patch-server_package.json"
-    - fetch -o patches/patch-server_FileConverter_package.json "${PORTS_BASE}/files/patch-server_FileConverter_package.json"
-    - fetch -o patches/patch-web-apps_build_package.json "${PORTS_BASE}/files/patch-web-apps_build_package.json"
+    - PORTS_DIR="/tmp/freebsd-ports/www/onlyoffice-documentserver/files"
+    - |
+      if [ -f "${PORTS_DIR}/patch-server_package.json" ]; then
+        cp "${PORTS_DIR}/patch-server_package.json" patches/
+        echo "  ✓ Copied patch-server_package.json"
+      else
+        echo "  ⚠ patch-server_package.json not found in ports tree"
+      fi
+    - |
+      if [ -f "${PORTS_DIR}/patch-server_FileConverter_package.json" ]; then
+        cp "${PORTS_DIR}/patch-server_FileConverter_package.json" patches/
+        echo "  ✓ Copied patch-server_FileConverter_package.json"
+      else
+        echo "  ⚠ patch-server_FileConverter_package.json not found in ports tree"
+      fi
+    - |
+      if [ -f "${PORTS_DIR}/patch-web-apps_build_package.json" ]; then
+        cp "${PORTS_DIR}/patch-web-apps_build_package.json" patches/
+        echo "  ✓ Copied patch-web-apps_build_package.json"
+      else
+        echo "  ⚠ patch-web-apps_build_package.json not found in ports tree"
+      fi
 
     - echo "--- Creating custom multer patch for server/DocService ---"
     - |
@@ -312,12 +335,12 @@ build_npm_cache_task:
     - echo "  pkg-fetch version: ${PKG_FETCH_VERSION}"
 
     - NODE_MAJOR=$(echo "${NODE_VERSION}" | cut -d'.' -f1)
+    - echo "  Node major version: ${NODE_MAJOR}"
 
     - mkdir -p freebsd-patches
     - |
       set -e
-      echo "  Cloning FreeBSD ports tree (shallow)..."
-      git clone --depth 1 https://github.com/freebsd/freebsd-ports.git /tmp/freebsd-ports
+      echo "  Using FreeBSD ports tree from /tmp/freebsd-ports..."
 
       NODE_PORT_DIR="/tmp/freebsd-ports/www/node${NODE_MAJOR}/files"
       if [ ! -d "${NODE_PORT_DIR}" ]; then
