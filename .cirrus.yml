@@ -150,18 +150,18 @@ build_npm_cache_task:
 
     # 1. Upstream shrinkwrap dirs (already have shrinkwrap - 5 dirs)
     - echo "1. Installing upstream shrinkwrap dirs..."
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/sdkjs/build src/sdkjs/build
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/web-apps/vendor/framework7-react src/web-apps/vendor/framework7-react
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Metrics src/server/Metrics
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/FileConverter src/server/FileConverter
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Common src/server/Common
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/sdkjs/build
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/web-apps/vendor/framework7-react
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Metrics
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/FileConverter
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Common
     - echo "  ✓ sdkjs/build, framework7-react, server/Metrics, server/FileConverter, server/Common"
 
     # 2. server (patch to add grunt, then shrinkwrap)
     - echo "2. Patching server/package.json (grunt + concurrently)..."
     - rm src/server/npm-shrinkwrap.json
     - patch -p0 -d src < patches/patch-server_package.json
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server src/server
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server
     - cd src/server && npm shrinkwrap && cd -
     - echo "  ✓ server/npm-shrinkwrap.json generated"
 
@@ -179,20 +179,20 @@ build_npm_cache_task:
         }
       }
       EOF
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/sdkjs src/sdkjs
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/sdkjs
     - cd src/sdkjs && npm shrinkwrap && cd -
     - echo "  ✓ sdkjs/package.json created"
     - echo "  ✓ sdkjs/npm-shrinkwrap.json generated"
 
     # 4. document-server-package/home/npm
     - echo "4. Installing document-server-package/home/npm..."
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/document-server-package/common/documentserver/home/npm src/document-server-package/common/documentserver/home/npm
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/document-server-package/common/documentserver/home/npm
     - cd src/document-server-package/common/documentserver/home/npm && npm shrinkwrap && cd -
     - echo "  ✓ document-server-package/.../npm-shrinkwrap.json generated"
 
     # 5. document-server-integration (--omit=dev)
     - echo "5. Installing document-server-integration/nodejs (--omit=dev)..."
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs src/document-server-integration/web/documentserver-example/nodejs
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs
     - cd src/document-server-integration/web/documentserver-example/nodejs && npm shrinkwrap && cd -
     - echo "  ✓ document-server-integration/.../npm-shrinkwrap.json generated"
 
@@ -218,15 +218,24 @@ build_npm_cache_task:
 
     # Install all 9 shrinkwrap dirs (5 upstream + 4 generated)
     # npm sees shrinkwrap file → only caches tarballs, NOT packuments
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs/build src/sdkjs/build
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/vendor/framework7-react src/web-apps/vendor/framework7-react
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics src/server/Metrics
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/FileConverter src/server/FileConverter
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Common src/server/Common
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs src/sdkjs
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server src/server
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/document-server-package/common/documentserver/home/npm src/document-server-package/common/documentserver/home/npm
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs src/document-server-integration/web/documentserver-example/nodejs
+    - rm -rf src/sdkjs/build/node_modules
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs/build
+    - rm -rf src/web-apps/vendor/framework7-react/node_modules
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/vendor/framework7-react
+    - rm -rf src/server/Metrics/node_modules
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics
+    - rm -rf src/server/FileConverter/node_modules
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/FileConverter
+    - rm -rf src/server/Common/node_modules
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Common
+    - rm -rf src/sdkjs/node_modules
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs
+    - rm -rf src/server/node_modules
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server
+    - rm -rf src/document-server-package/common/documentserver/home/npm/node_modules
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/document-server-package/common/documentserver/home/npm 
+    - rm -rf src/document-server-integration/web/documentserver-example/nodejs/node_modules
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs
 
     - echo ""
     - echo "Phase 2 complete: 9 directories cached (tarballs only)"
@@ -246,7 +255,7 @@ build_npm_cache_task:
     # web-apps/build
     - echo "1. web-apps/build (patch-package, optipng-bin)..."
     - patch -p0 -d src < patches/patch-web-apps_build_package.json
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build src/web-apps/build
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build patch-package
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build optipng-bin@5.1.0
     - echo "  ✓ web-apps/build/package-lock.json"
@@ -255,7 +264,7 @@ build_npm_cache_task:
     - echo "2. server/DocService (patch-package, sharp)..."
     - patch -p0 -d src < patches/patch-server_DocService_package.json
     - rm src/server/DocService/npm-shrinkwrap.json
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService src/server/DocService
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService patch-package
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
     - echo "  ✓ server/DocService/package-lock.json"
@@ -407,7 +416,7 @@ build_npm_cache_task:
         if [ -f "${npm_dir}/package.json" ]; then
           rm -rf "${npm_dir}/node_modules"
           if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
-              --prefix "${npm_dir}" "${npm_dir}" ; then
+              --prefix "${npm_dir}" "${npm_dir}" >/dev/null 2>&1; then
             success=$((success + 1))
           else
             echo "  ✗ FAILED: ${npm_dir#src/}"
