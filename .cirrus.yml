@@ -159,6 +159,7 @@ build_npm_cache_task:
 
     # 2. server (patch to add grunt, then shrinkwrap)
     - echo "2. Patching server/package.json (grunt + concurrently)..."
+    - rm src/server/npm-shrinkwrap.json
     - patch -p0 -d src < patches/patch-server_package.json
     - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server src/server
     - cd src/server && npm shrinkwrap && cd -
@@ -253,6 +254,7 @@ build_npm_cache_task:
     # server/DocService
     - echo "2. server/DocService (patch-package, sharp)..."
     - patch -p0 -d src < patches/patch-server_DocService_package.json
+    - rm src/server/DocService/npm-shrinkwrap.json
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService src/server/DocService
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService patch-package
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
