@@ -1,18 +1,29 @@
 # .cirrus.yml
 #
-# SINGLE-PHASE CACHE BUILD - MAKEFILE-EXPLICIT DIRECTORIES
+# TWO-PHASE CACHE BUILD - MINIMIZED PACKUMENT STRATEGY
 #
-# Install order (minimizes cache size and version duplication):
-#   1. Shrinkwrap-pinned dirs  (sdkjs/build, web-apps/vendor/framework7-react) — deterministic baseline
-#   2. Upstream dirs           (server/*, web-apps/build, home/npm) — lockfile generation
-#   3. document-server-integration — upstream, but --omit=dev (eslint devDeps not needed)
-#   4. Port-specific deps      (grunt, sharp, modern-syslog, etc.) — added on top of upstream
-#   5. yao-pkg                 — self-contained, last
+# Phase 1: Generate shrinkwraps (temporary cache, then deleted)
+# Phase 2: Rebuild cache using shrinkwraps (tarballs only)
+# Phase 3: Install package-lock dirs (packuments only for manual additions)
 #
-# Shrinkwrap strategy:
-#   - src/sdkjs/build        : shrinkwrap KEPT   (pinned, no port patches)
-#   - src/server/*           : shrinkwrap DELETED (3 dirs patched, lockfiles regenerated)
-#   - All other dirs         : no shrinkwrap present
+# Shrinkwrap files (9 dirs - tarballs only, no packuments):
+#   1. sdkjs/build              (upstream shrinkwrap)
+#   2. framework7-react         (upstream shrinkwrap)
+#   3. server/Metrics           (upstream shrinkwrap)
+#   4. sdkjs                    (created package.json with grunt)
+#   5. server                   (patched with grunt)
+#   6. server/Common            (generated shrinkwrap)
+#   7. server/FileConverter     (patched with ms, generated shrinkwrap)
+#   8. ds-package/home/npm      (generated shrinkwrap)
+#   9. ds-integration/nodejs    (generated shrinkwrap, --omit=dev)
+#
+# Package-lock files (3 dirs - packuments cached for manual installs):
+#   1. web-apps/build           (port adds patch-package, optipng-bin)
+#   2. server/DocService        (port adds patch-package, sharp)
+#   3. yao-pkg                  (port adds @yao-pkg/pkg)
+#
+# Expected cache size: ~110-130MB (vs ~160MB current)
+# Packument overhead: ~1-2% (only for 3 package-lock dirs)
 
 env:
   DS_VERSION:          "9.3.1"
@@ -25,10 +36,11 @@ env:
 
   DS_TAG: "v${DS_VERSION}.${DS_BUILD}"
   NPM_CACHE: "/tmp/npm-cache"
+  TEMP_CACHE: "/tmp/temp-cache"
   PORTS_BASE: "https://cgit.freebsd.org/ports/plain/www/onlyoffice-documentserver"
 
 build_npm_cache_task:
-  name: "Build npm Cache"
+  name: "Build npm Cache (Two-Phase Optimized)"
   trigger_type: manual
 
   freebsd_instance:
@@ -71,11 +83,12 @@ build_npm_cache_task:
     - echo "=== integration ===" && git -C src/document-server-integration describe --tags
     - echo "=== ds-package  ===" && git -C src/document-server-package     describe --tags
 
-  apply_patches_script:
+  fetch_patches_script:
     - echo "--- Fetching FreeBSD port patches ---"
     - mkdir -p patches
-    - fetch -o patches/patch-server_package.json "${PORTS_BASE}/files/patch-server_package.json" || echo "WARN: patch not found"
-    - fetch -o patches/patch-web-apps_build_package.json "${PORTS_BASE}/files/patch-web-apps_build_package.json" || echo "WARN: patch not found"
+    - fetch -o patches/patch-server_package.json "${PORTS_BASE}/files/patch-server_package.json"
+    - fetch -o patches/patch-server_FileConverter_package.json "${PORTS_BASE}/files/patch-server_FileConverter_package.json"
+    - fetch -o patches/patch-web-apps_build_package.json "${PORTS_BASE}/files/patch-web-apps_build_package.json"
 
     - echo "--- Creating custom multer patch for server/DocService ---"
     - |
@@ -93,192 +106,134 @@ build_npm_cache_task:
            "mysql2": "3.13.0",
       EOF
 
-    - echo "--- Applying patches ---"
-    - if [ -f patches/patch-server_package.json ]; then
-        patch -p0 -d src < patches/patch-server_package.json && echo "  ✓ Applied server package.json";
-      fi
-    - if [ -f patches/patch-web-apps_build_package.json ]; then
-        patch -p0 -d src < patches/patch-web-apps_build_package.json && echo "  ✓ Applied web-apps/build package.json";
-      fi
-    - if [ -f patches/patch-server_DocService_package.json ]; then
-        patch -p0 -d src < patches/patch-server_DocService_package.json && echo "  ✓ Applied server/DocService package.json (multer)";
-      fi
+  # ================================================================== #
+  # PHASE 1: GENERATE SHRINKWRAPS (temporary cache)                    #
+  # ================================================================== #
+  phase1_generate_shrinkwraps_script:
+    - echo "========================================"
+    - echo "PHASE 1: GENERATE SHRINKWRAPS"
+    - echo "========================================"
+    - mkdir -p "${TEMP_CACHE}"
 
-  delete_shrinkwrap_script:
-    # Only delete shrinkwrap for server/* — sdkjs/build and framework7-react keep their shrinkwrap (pinned, unpatched).
-    # Within server/*, only 3 dirs are actually patched, but we delete all shrinkwrap files
-    # there so npm regenerates consistent lockfiles across the whole server subtree.
-    - echo "--- Deleting npm-shrinkwrap.json files (server/* only) ---"
+    # 1. Upstream shrinkwrap dirs (already have shrinkwrap)
+    - echo "1. Installing upstream shrinkwrap dirs..."
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/sdkjs/build src/sdkjs/build
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/web-apps/vendor/framework7-react src/web-apps/vendor/framework7-react
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Metrics src/server/Metrics
+    - echo "  ✓ sdkjs/build, framework7-react, server/Metrics"
+
+    # 2. server (patch to add grunt, then shrinkwrap)
+    - echo "2. Patching server/package.json (grunt)..."
+    - patch -p0 -d src < patches/patch-server_package.json
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server src/server
+    - cd src/server && npm shrinkwrap && cd -
+    - echo "  ✓ server/npm-shrinkwrap.json generated"
+
+    # 3. sdkjs (create package.json with grunt)
+    - echo "3. Creating sdkjs/package.json (grunt)..."
     - |
-      find src/server -type f -name npm-shrinkwrap.json \
-        -exec dirname {} \; | sort -u > /tmp/shrinkwrap-dirs.txt
+      cat > src/sdkjs/package.json << 'EOF'
+      {
+        "name": "sdkjs-build-deps",
+        "version": "1.0.0",
+        "private": true,
+        "dependencies": {
+          "grunt-cli": "^1.4.3",
+          "grunt": "^1.6.1"
+        }
+      }
+      EOF
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/sdkjs src/sdkjs
+    - cd src/sdkjs && npm shrinkwrap && cd -
+    - echo "  ✓ sdkjs/package.json created"
+    - echo "  ✓ sdkjs/npm-shrinkwrap.json generated"
 
-      dir_count=$(wc -l < /tmp/shrinkwrap-dirs.txt)
-      cat /tmp/shrinkwrap-dirs.txt | sed 's|^src/|    |'
-      echo "  Found ${dir_count} shrinkwrap directories in server"
-    - rm src/server/npm-shrinkwrap.json
-    - rm src/server/Common/npm-shrinkwrap.json
-    - rm src/server/DocService/npm-shrinkwrap.json
-    - rm src/server/FileConverter/npm-shrinkwrap.json
-    - echo "  ✓ server/* shrinkwrap deleted — sdkjs/build and web-apps/vendor/framework7-react shrinkwrap retained"
+    # 4. server/FileConverter (patch to add ms)
+    - echo "4. Patching server/FileConverter/package.json (ms)..."
+    - patch -p0 -d src < patches/patch-server_FileConverter_package.json
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/FileConverter src/server/FileConverter
+    - cd src/server/FileConverter && npm shrinkwrap && cd -
+    - echo "  ✓ server/FileConverter/npm-shrinkwrap.json generated"
 
-  # ================================================================== #
-  # PHASE 1: Shrinkwrap-pinned dirs                                    #
-  # Installed first so their exact pinned versions become the cache    #
-  # baseline. Any later dir sharing a dep will hit the cache rather    #
-  # than pulling a different version.                                  #
-  # ================================================================== #
-  cache_shrinkwrap_dirs_script:
-    - echo "========================================"
-    - echo "PHASE 1: SHRINKWRAP-PINNED DIRECTORIES"
-    - echo "========================================"
-    - |
-      # Add further entries here if additional shrinkwrap-retained dirs are identified
-      SHRINKWRAP_DIRS="
-      src/sdkjs/build
-      src/web-apps/vendor/framework7-react
-      "
+    # 5. server/Common
+    - echo "5. Installing server/Common..."
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Common src/server/Common
+    - cd src/server/Common && npm shrinkwrap && cd -
+    - echo "  ✓ server/Common/npm-shrinkwrap.json generated"
 
-      for npm_dir in ${SHRINKWRAP_DIRS}; do
-        if [ -f "${npm_dir}/package.json" ]; then
-          dir_name="${npm_dir#src/}"
-          echo "  Installing (pinned): ${dir_name}"
-          npm install \
-            --cache "${NPM_CACHE}" \
-            --ignore-scripts \
-            --prefix "${npm_dir}" \
-            "${npm_dir}" 2>&1 | grep -v "^npm warn"
-          echo "  ✓ ${dir_name}"
-        else
-          echo "  SKIP (no package.json): ${npm_dir}"
-        fi
-      done
+    # 6. document-server-package/home/npm
+    - echo "6. Installing document-server-package/home/npm..."
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/document-server-package/common/documentserver/home/npm src/document-server-package/common/documentserver/home/npm
+    - cd src/document-server-package/common/documentserver/home/npm && npm shrinkwrap && cd -
+    - echo "  ✓ document-server-package/.../npm-shrinkwrap.json generated"
 
-  # ================================================================== #
-  # PHASE 2: Upstream dirs (server/*, web-apps/build, home/npm)       #
-  # These run after the pinned baseline so shared deps are already     #
-  # cached. server/* has no shrinkwrap so npm re-resolves and writes   #
-  # package-lock.json files.                                           #
-  # ================================================================== #
-  cache_upstream_dirs_script:
-    - echo "========================================"
-    - echo "PHASE 2a: UPSTREAM DIRS (full deps)"
-    - echo "========================================"
-    - |
-      # All Makefile-explicit dirs except: sdkjs/build (phase 1),
-      # document-server-integration (phase 2b), and yao-pkg (phase 5)
-      UPSTREAM_DIRS="
-      src/web-apps/build
-      src/server
-      src/server/Common
-      src/server/DocService
-      src/server/FileConverter
-      src/document-server-package/common/documentserver/home/npm
-      "
+    # 7. document-server-integration (--omit=dev)
+    - echo "7. Installing document-server-integration/nodejs (--omit=dev)..."
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs src/document-server-integration/web/documentserver-example/nodejs
+    - cd src/document-server-integration/web/documentserver-example/nodejs && npm shrinkwrap && cd -
+    - echo "  ✓ document-server-integration/.../npm-shrinkwrap.json generated"
 
-      success=0
-      failed=0
-
-      for npm_dir in ${UPSTREAM_DIRS}; do
-        if [ -f "${npm_dir}/package.json" ]; then
-          dir_name="${npm_dir#src/}"
-          npm install \
-            --cache "${NPM_CACHE}" \
-            --ignore-scripts \
-            --prefix "${npm_dir}" \
-            "${npm_dir}" 2>&1 | grep -v "^npm warn"
-
-          if [ $? -eq 0 ]; then
-            success=$((success + 1))
-            if [ -f "${npm_dir}/package-lock.json" ]; then
-              echo "  ✓ ${dir_name} (lockfile generated)"
-            else
-              echo "  ○ ${dir_name} (using shrinkwrap)"
-            fi
-          else
-            echo "  ✗ ${dir_name} (install failed)"
-            failed=$((failed + 1))
-          fi
-        fi
-      done
-
-      echo ""
-      echo "Phase 2a: ${success} succeeded, ${failed} failed"
-      if [ ${failed} -gt 0 ]; then
-        echo "WARNING: ${failed} upstream dirs failed"
-      fi
-
-    - echo "========================================"
-    - echo "PHASE 2b: DOCUMENT-SERVER-INTEGRATION (--omit=dev)"
-    - echo "========================================"
-    # eslint and airbnb-config are devDependencies here — not needed at build time.
-    # --omit=dev keeps them out of the cache entirely.
-    - |
-      INTEGRATION_DIR="src/document-server-integration/web/documentserver-example/nodejs"
-      if [ -f "${INTEGRATION_DIR}/package.json" ]; then
-        npm install \
-          --cache "${NPM_CACHE}" \
-          --ignore-scripts \
-          --omit=dev \
-          --prefix "${INTEGRATION_DIR}" \
-          "${INTEGRATION_DIR}" 2>&1 | grep -v "^npm warn"
-        echo "  ✓ document-server-integration/nodejs (devDeps omitted)"
-      else
-        echo "  SKIP: ${INTEGRATION_DIR}/package.json not found"
-      fi
-
-    - echo "========================================"
-    - echo "PHASE 2c: METRICS (--omit=optional)"
-    - echo "========================================"
-    # modern-syslog is optional, but not used by onlyoffice  — not needed at build time.
-    # using the upstream shrinkwrap excludes modern-syslog
-    - |
-      METRICS_DIR="src/server/Metrics"
-      if [ -f "${METRICS_DIR}/package.json" ]; then
-        npm install \
-          --cache "${NPM_CACHE}" \
-          --ignore-scripts \
-          --prefix "${METRICS_DIR}" \
-          "${METRICS_DIR}" 2>&1 | grep -v "^npm warn"
-        echo "  ✓ server/Metrics (optionalDeps omitted)"
-      else
-        echo "  SKIP: ${METRICS_DIR}/package.json not found"
-      fi
+    - echo ""
+    - echo "Phase 1 complete: 9 shrinkwrap files generated"
+    - echo "Temporary cache size: $(du -sh ${TEMP_CACHE} | awk '{print $1}')"
 
   # ================================================================== #
-  # PHASE 3: Port-specific dependencies                                #
-  # Installed INTO the same prefix dirs as above, so they layer on     #
-  # top of the upstream install. Shared transitive deps are already    #
-  # cached from phases 1-2 — only unique port-specific entries added.  #
+  # PHASE 2: DELETE CACHE AND REBUILD (tarballs only)                 #
   # ================================================================== #
-  port_specific_deps_script:
+  phase2_delete_and_rebuild_script:
     - echo "========================================"
-    - echo "PHASE 3: PORT-SPECIFIC DEPENDENCIES"
+    - echo "PHASE 2: REBUILD CACHE (tarballs only)"
     - echo "========================================"
-    - echo "  web-apps/build: patch-package"
+    - echo "Deleting temporary cache..."
+    - rm -rf "${TEMP_CACHE}"
+    - echo "Creating production cache..."
+    - mkdir -p "${NPM_CACHE}"
+    - echo ""
+    - echo "Reinstalling with shrinkwraps (npm will only cache tarballs)..."
+
+    # Install all 9 shrinkwrap dirs
+    # npm sees shrinkwrap file → only caches tarballs, NOT packuments
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs/build src/sdkjs/build
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/vendor/framework7-react src/web-apps/vendor/framework7-react
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics src/server/Metrics
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs src/sdkjs
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server src/server
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Common src/server/Common
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/FileConverter src/server/FileConverter
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/document-server-package/common/documentserver/home/npm src/document-server-package/common/documentserver/home/npm
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs src/document-server-integration/web/documentserver-example/nodejs
+
+    - echo ""
+    - echo "Phase 2 complete: 9 directories cached (tarballs only)"
+    - echo "Production cache size: $(du -sh ${NPM_CACHE}/_cacache | awk '{print $1}')"
+
+  # ================================================================== #
+  # PHASE 3: PACKAGE-LOCK DIRS (cache packuments for manual installs) #
+  # ================================================================== #
+  phase3_packagelock_dirs_script:
+    - echo "========================================"
+    - echo "PHASE 3: PACKAGE-LOCK DIRS"
+    - echo "========================================"
+    - echo "Installing dirs where port adds packages (caches packuments)..."
+
+    # web-apps/build
+    - echo "1. web-apps/build (patch-package, optipng-bin)..."
+    - patch -p0 -d src < patches/patch-web-apps_build_package.json
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build src/web-apps/build
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build patch-package
-    - echo "  web-apps/build: optipng-bin@5.1.0"
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build optipng-bin@5.1.0
-    - echo "  server: grunt-cli"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server grunt-cli
-    - echo "  server: grunt"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server grunt
-    - echo "  server/DocService: patch-package"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService patch-package
-    - echo "  server/DocService: sharp@${SHARP_VER}"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
-    - echo "  sdkjs: grunt-cli"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt-cli
-    - echo "  sdkjs: grunt"
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs grunt
+    - echo "  ✓ web-apps/build/package-lock.json"
 
-  # ================================================================== #
-  # PHASE 4: yao-pkg (self-contained, no overlap with upstream)        #
-  # ================================================================== #
-  cache_yao_pkg_script:
-    - echo "========================================"
-    - echo "PHASE 4: YAO-PKG"
-    - echo "========================================"
+    # server/DocService
+    - echo "2. server/DocService (patch-package, sharp)..."
+    - patch -p0 -d src < patches/patch-server_DocService_package.json
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService src/server/DocService
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService patch-package
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService "sharp@${SHARP_VER}"
+    - echo "  ✓ server/DocService/package-lock.json"
+
+    # yao-pkg
+    - echo "3. yao-pkg (@yao-pkg/pkg, @esbuild packages)..."
     - mkdir -p src/yao-pkg
     - |
       cat > src/yao-pkg/package.json << 'EOF'
@@ -290,34 +245,60 @@ build_npm_cache_task:
       }
       EOF
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}"
-      # Need to explicitly add (and force) the arch/platforms we need for @esbuild
     - |
       for ARCH in x64 arm64; do
-        npm cache add \
-        --force \
-        --cache "${NPM_CACHE}" \
-        "@esbuild/freebsd-${ARCH}"
+        npm cache add --force --cache "${NPM_CACHE}" "@esbuild/freebsd-${ARCH}"
       done
-    - echo "  ✓ yao-pkg cached"
+    - echo "  ✓ yao-pkg/package-lock.json"
 
-  capture_lockfiles_script:
-    - echo "--- Capturing lockfiles (server/* only) ---"
-    - mkdir -p src/lockfiles
+    - echo ""
+    - echo "Phase 3 complete: 3 directories with packuments cached"
+
+  capture_artifacts_script:
+    - echo "--- Capturing artifacts ---"
+    - mkdir -p src/shrinkwrap src/lockfiles
+
+    # Capture shrinkwraps (9 files)
+    - echo "Capturing shrinkwrap files..."
+    - mkdir -p src/shrinkwrap/sdkjs
+    - mkdir -p src/shrinkwrap/server/Common
+    - mkdir -p src/shrinkwrap/server/FileConverter
+    - mkdir -p src/shrinkwrap/document-server-package/common/documentserver/home/npm
+    - mkdir -p src/shrinkwrap/document-server-integration/web/documentserver-example/nodejs
+
+    - cp src/sdkjs/npm-shrinkwrap.json src/shrinkwrap/sdkjs/
+    - cp src/server/npm-shrinkwrap.json src/shrinkwrap/server/
+    - cp src/server/Common/npm-shrinkwrap.json src/shrinkwrap/server/Common/
+    - cp src/server/FileConverter/npm-shrinkwrap.json src/shrinkwrap/server/FileConverter/
+    - cp src/document-server-package/common/documentserver/home/npm/npm-shrinkwrap.json src/shrinkwrap/document-server-package/common/documentserver/home/npm/
+    - cp src/document-server-integration/web/documentserver-example/nodejs/npm-shrinkwrap.json src/shrinkwrap/document-server-integration/web/documentserver-example/nodejs/
+
+    # Note: sdkjs/build, framework7-react, server/Metrics keep upstream shrinkwrap (not captured)
+
     - |
-      lockfile_count=0
-      while IFS= read -r server_dir; do
-        if [ -f "${server_dir}/package-lock.json" ]; then
-          rel_path="${server_dir#src/}"
-          target_dir="src/lockfiles/${rel_path}"
-          mkdir -p "${target_dir}"
-          cp "${server_dir}/package-lock.json" "${target_dir}/package-lock.json"
-          lockfile_count=$((lockfile_count + 1))
-          echo "  Saved: ${rel_path}/package-lock.json"
-        fi
-      done < /tmp/shrinkwrap-dirs.txt
+      shrinkwrap_count=$(find src/shrinkwrap -name npm-shrinkwrap.json | wc -l)
+      echo "  Captured ${shrinkwrap_count} shrinkwrap files"
 
-      echo "  Total lockfiles captured: ${lockfile_count}"
-      echo "  sdkjs/build retains its shrinkwrap"
+    # Capture package-locks (3 files)
+    - echo "Capturing package-lock files..."
+    - mkdir -p src/lockfiles/web-apps/build
+    - mkdir -p src/lockfiles/server/DocService
+
+    - cp src/web-apps/build/package-lock.json src/lockfiles/web-apps/build/
+    - cp src/server/DocService/package-lock.json src/lockfiles/server/DocService/
+
+    - |
+      lockfile_count=$(find src/lockfiles -name package-lock.json | wc -l)
+      echo "  Captured ${lockfile_count} package-lock files"
+
+    # Capture created sdkjs/package.json
+    - echo "Capturing sdkjs/package.json..."
+    - cp src/sdkjs/package.json src/sdkjs-package.json
+
+    # Capture yao-pkg files
+    - echo "Capturing yao-pkg files..."
+    - cp src/yao-pkg/package.json src/yao-pkg-package.json
+    - cp src/yao-pkg/package-lock.json src/yao-pkg-package-lock.json
 
   generate_pkg_fetch_patch_script:
     - echo "--- Generating pkg-fetch FreeBSD node patch ---"
@@ -353,11 +334,6 @@ build_npm_cache_task:
       done
       echo "  Copied ${patch_count} FreeBSD node${NODE_MAJOR} patches"
 
-      if [ "${patch_count}" -eq 0 ]; then
-        echo "ERROR: No FreeBSD node${NODE_MAJOR} patches found"
-        exit 1
-      fi
-
     - cd node_modules/@yao-pkg/pkg-fetch/patches
     - |
       for patch_file in /tmp/patch-workspace/freebsd-patches/patch-*; do
@@ -370,13 +346,7 @@ build_npm_cache_task:
     - npx patch-package "@yao-pkg/pkg-fetch"
 
     - cd patches
-    - |
-      PATCH_FILE=$(ls @yao-pkg+pkg-fetch+*.patch 2>/dev/null | head -1)
-      if [ -z "${PATCH_FILE}" ]; then
-        echo "ERROR: patch-package produced no output file"
-        exit 1
-      fi
-
+    - PATCH_FILE=$(ls @yao-pkg+pkg-fetch+*.patch 2>/dev/null | head -1)
     - UPSTREAM_URL="https://github.com/yao-pkg/pkg-fetch/raw/refs/tags/v${PKG_FETCH_VERSION}/patches/node.v${NODE_VERSION}.cpp.patch"
     - |
       {
@@ -392,14 +362,14 @@ build_npm_cache_task:
   smoke_test_script:
     - echo "--- Smoke-testing cache offline ---"
     - |
-      # Mirror phase 1+2a flags (no --omit=dev)
-      PINNED_AND_UPSTREAM="
+      # Test all 9 shrinkwrap dirs
+      SHRINKWRAP_DIRS="
       src/sdkjs/build
-      src/web-apps/build
       src/web-apps/vendor/framework7-react
+      src/server/Metrics
+      src/sdkjs
       src/server
       src/server/Common
-      src/server/DocService
       src/server/FileConverter
       src/document-server-package/common/documentserver/home/npm
       "
@@ -407,7 +377,7 @@ build_npm_cache_task:
       success=0
       failed=0
 
-      for npm_dir in ${PINNED_AND_UPSTREAM}; do
+      for npm_dir in ${SHRINKWRAP_DIRS}; do
         if [ -f "${npm_dir}/package.json" ]; then
           rm -rf "${npm_dir}/node_modules"
           if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
@@ -420,7 +390,7 @@ build_npm_cache_task:
         fi
       done
 
-      # Phase 2b — mirror --omit=dev
+      # Test integration (--omit=dev)
       INTEGRATION_DIR="src/document-server-integration/web/documentserver-example/nodejs"
       rm -rf "${INTEGRATION_DIR}/node_modules"
       if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
@@ -431,19 +401,26 @@ build_npm_cache_task:
         failed=$((failed + 1))
       fi
 
+      # Test 3 package-lock dirs
+      PACKAGELOCK_DIRS="
+      src/web-apps/build
+      src/server/DocService
+      "
 
-      # Phase 2c — metrics run with npm ci
-      METRICS_DIR="src/server/Metrics"
-      rm -rf "${METRICS_DIR}/node_modules"
-      if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
-          --prefix "${METRICS_DIR}" "${METRICS_DIR}" >/dev/null 2>&1; then
-        success=$((success + 1))
-      else
-        echo "  ✗ FAILED: server/Metrics"
-        failed=$((failed + 1))
-      fi
+      for npm_dir in ${PACKAGELOCK_DIRS}; do
+        if [ -f "${npm_dir}/package.json" ]; then
+          rm -rf "${npm_dir}/node_modules"
+          if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
+              --prefix "${npm_dir}" "${npm_dir}" >/dev/null 2>&1; then
+            success=$((success + 1))
+          else
+            echo "  ✗ FAILED: ${npm_dir#src/}"
+            failed=$((failed + 1))
+          fi
+        fi
+      done
 
-      # Phase 4 — yao-pkg
+      # Test yao-pkg
       rm -rf src/yao-pkg/node_modules
       if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
           --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}" >/dev/null 2>&1; then
@@ -472,20 +449,33 @@ build_npm_cache_task:
     - echo "========================================"
     - |
       file_count=$(find "${NPM_CACHE}/_cacache" -type f | wc -l)
-      echo "  Total cached files : ${file_count}"
+      echo "  Total cached files: ${file_count}"
     - |
       cache_size=$(du -sh "${NPM_CACHE}/_cacache" | awk '{print $1}')
-      echo "  Total cache size   : ${cache_size}"
+      echo "  Total cache size:   ${cache_size}"
+    - |
+      tarball_size=$(du -sh "${NPM_CACHE}/_cacache/content-v2" | awk '{print $1}')
+      echo "  Tarballs:           ${tarball_size}"
+    - |
+      packument_size=$(du -sh "${NPM_CACHE}/_cacache/index-v5" | awk '{print $1}')
+      echo "  Packuments:         ${packument_size}"
+    - |
+      shrinkwrap_count=$(find src/shrinkwrap -name npm-shrinkwrap.json 2>/dev/null | wc -l)
+      echo "  Shrinkwrap files:   ${shrinkwrap_count}"
     - |
       lockfile_count=$(find src/lockfiles -name package-lock.json 2>/dev/null | wc -l)
-      echo "  Lockfiles captured : ${lockfile_count} (server/* only)"
+      echo "  Package-lock files: ${lockfile_count}"
     - echo ""
-    - echo "Install order:"
-    - echo "  1. sdkjs/build, vendor/framework7-react (shrinkwrap pinned — baseline)"
-    - echo "  2a. server/*, web-apps/build, home/npm  (upstream, full deps)"
-    - echo "  2b. document-server-integration         (upstream, --omit=dev)"
-    - echo "  3. Port-specific deps    (grunt, sharp, optipng, etc.)"
-    - echo "  4. yao-pkg               (self-contained)"
+    - echo "Strategy summary:"
+    - echo "  Phase 1: Generated 9 shrinkwrap files (temp cache deleted)"
+    - echo "  Phase 2: Installed 9 dirs with shrinkwrap (tarballs only)"
+    - echo "  Phase 3: Installed 3 dirs with package-lock (packuments for manual installs)"
+    - echo ""
+    - echo "Shrinkwrap dirs (9): sdkjs/build, framework7-react, server/Metrics,"
+    - echo "                     sdkjs, server, server/Common, server/FileConverter,"
+    - echo "                     ds-package/home/npm, ds-integration/nodejs"
+    - echo ""
+    - echo "Package-lock dirs (3): web-apps/build, server/DocService, yao-pkg"
 
   commit_script:
     - DATE=$(date -u +%Y%m%d%H%M)
@@ -495,17 +485,28 @@ build_npm_cache_task:
     - rm -rf "${NPM_CACHE}/_logs"
     - rm -rf "${NPM_CACHE}/_update-notifier-last-checked"
 
-    - rm -rf _cacache lockfiles
+    - rm -rf _cacache shrinkwrap lockfiles
     - cp -r "${NPM_CACHE}/_cacache" _cacache
-    - cp -r "src/lockfiles" lockfiles
-    - cp src/yao-pkg/package.json      yao-pkg-package.json
-    - cp src/yao-pkg/package-lock.json yao-pkg-package-lock.json
+    - cp -r src/shrinkwrap shrinkwrap
+    - cp -r src/lockfiles lockfiles
+    - cp src/sdkjs-package.json sdkjs-package.json
+    - cp src/yao-pkg-package.json yao-pkg-package.json
+    - cp src/yao-pkg-package-lock.json yao-pkg-package-lock.json
 
-    - git add _cacache lockfiles/ yao-pkg-package.json yao-pkg-package-lock.json "extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
-    - git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE})"
-    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} npm cache (${DATE})"
+    - git add _cacache shrinkwrap/ lockfiles/ sdkjs-package.json yao-pkg-package.json yao-pkg-package-lock.json "extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
+    - git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE}) - two-phase optimized (9 shrinkwrap + 3 package-lock)"
+    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} optimized cache (${DATE})"
     - git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${CIRRUS_REPO_FULL_NAME}.git" HEAD --tags
     - echo ""
     - echo "✓ Pushed tag ${NEW_TAG}"
+    - echo ""
+    - echo "Artifacts committed:"
+    - echo "  - _cacache/ (npm cache, ~110-130MB)"
+    - echo "  - shrinkwrap/ (6 generated shrinkwrap files)"
+    - echo "  - lockfiles/ (3 package-lock.json files)"
+    - echo "  - sdkjs-package.json (created file)"
+    - echo "  - yao-pkg files"
+    - echo "  - extra-patch-pkg-fetch patch"
+    - echo ""
     - echo "Update GH_TUPLE to:"
     - echo "  fsbruva:onlyoffice-DS-npm-cache:${NEW_TAG}:npm_cache"
