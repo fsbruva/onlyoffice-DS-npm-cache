@@ -92,20 +92,6 @@ build_npm_cache_task:
     - mkdir -p patches
     - PORTS_DIR="/tmp/freebsd-ports/www/onlyoffice-documentserver/files"
     - |
-      if [ -f "${PORTS_DIR}/patch-server_package.json" ]; then
-        cp "${PORTS_DIR}/patch-server_package.json" patches/
-        echo "  ✓ Copied patch-server_package.json"
-      else
-        echo "  ⚠ patch-server_package.json not found in ports tree"
-      fi
-    - |
-      if [ -f "${PORTS_DIR}/patch-server_FileConverter_package.json" ]; then
-        cp "${PORTS_DIR}/patch-server_FileConverter_package.json" patches/
-        echo "  ✓ Copied patch-server_FileConverter_package.json"
-      else
-        echo "  ⚠ patch-server_FileConverter_package.json not found in ports tree"
-      fi
-    - |
       if [ -f "${PORTS_DIR}/patch-web-apps_build_package.json" ]; then
         cp "${PORTS_DIR}/patch-web-apps_build_package.json" patches/
         echo "  ✓ Copied patch-web-apps_build_package.json"
@@ -113,7 +99,30 @@ build_npm_cache_task:
         echo "  ⚠ patch-web-apps_build_package.json not found in ports tree"
       fi
 
-    - echo "--- Creating custom multer patch for server/DocService ---"
+    - echo "--- Creating patches for version 9.3.1 ---"
+
+    # server/package.json patch (add grunt, change npm-run-all to concurrently)
+    - |
+      cat > patches/patch-server_package.json << 'PATCH_EOF'
+      --- server/package.json.orig	2026-02-23 07:24:11 UTC
+      +++ server/package.json
+      @@ -4,9 +4,11 @@
+         "homepage": "https://www.onlyoffice.com",
+         "private": true,
+         "dependencies": {
+      +    "grunt": "^1.6.1",
+      +    "grunt-cli": "^1.5.0",
+           "license-downloader": "1.0.8",
+           "license-report": "6.5.0",
+      -    "npm-run-all": "4.1.5"
+      +    "concurrently": "^9.2.0"
+         },
+         "devDependencies": {
+           "@eslint/compat": "1.2.3",
+      PATCH_EOF
+      echo "  ✓ Created patch-server_package.json (for 9.3.1)"
+
+    # server/DocService multer patch
     - |
       cat > patches/patch-server_DocService_package.json << 'EOF'
       --- server/DocService/package.json.orig	2026-02-23 07:24:11.000000000 +0000
@@ -128,6 +137,7 @@ build_npm_cache_task:
            "multiparty": "4.2.3",
            "mysql2": "3.13.0",
       EOF
+      echo "  ✓ Created patch-server_DocService_package.json (multer 2.0.2)"
 
   # ================================================================== #
   # PHASE 1: GENERATE SHRINKWRAPS (temporary cache)                    #
@@ -138,21 +148,23 @@ build_npm_cache_task:
     - echo "========================================"
     - mkdir -p "${TEMP_CACHE}"
 
-    # 1. Upstream shrinkwrap dirs (already have shrinkwrap)
+    # 1. Upstream shrinkwrap dirs (already have shrinkwrap - 5 dirs)
     - echo "1. Installing upstream shrinkwrap dirs..."
     - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/sdkjs/build src/sdkjs/build
     - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/web-apps/vendor/framework7-react src/web-apps/vendor/framework7-react
     - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Metrics src/server/Metrics
-    - echo "  ✓ sdkjs/build, framework7-react, server/Metrics"
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/FileConverter src/server/FileConverter
+    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Common src/server/Common
+    - echo "  ✓ sdkjs/build, framework7-react, server/Metrics, server/FileConverter, server/Common"
 
     # 2. server (patch to add grunt, then shrinkwrap)
-    - echo "2. Patching server/package.json (grunt)..."
+    - echo "2. Patching server/package.json (grunt + concurrently)..."
     - patch -p0 -d src < patches/patch-server_package.json
     - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server src/server
     - cd src/server && npm shrinkwrap && cd -
     - echo "  ✓ server/npm-shrinkwrap.json generated"
 
-    # 3. sdkjs (create package.json with grunt)
+    # 3. sdkjs (create package.json with grunt - matching server versions)
     - echo "3. Creating sdkjs/package.json (grunt)..."
     - |
       cat > src/sdkjs/package.json << 'EOF'
@@ -161,7 +173,7 @@ build_npm_cache_task:
         "version": "1.0.0",
         "private": true,
         "dependencies": {
-          "grunt-cli": "^1.4.3",
+          "grunt-cli": "^1.5.0",
           "grunt": "^1.6.1"
         }
       }
@@ -171,33 +183,22 @@ build_npm_cache_task:
     - echo "  ✓ sdkjs/package.json created"
     - echo "  ✓ sdkjs/npm-shrinkwrap.json generated"
 
-    # 4. server/FileConverter (patch to add ms)
-    - echo "4. Patching server/FileConverter/package.json (ms)..."
-    - patch -p0 -d src < patches/patch-server_FileConverter_package.json
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/FileConverter src/server/FileConverter
-    - cd src/server/FileConverter && npm shrinkwrap && cd -
-    - echo "  ✓ server/FileConverter/npm-shrinkwrap.json generated"
-
-    # 5. server/Common
-    - echo "5. Installing server/Common..."
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Common src/server/Common
-    - cd src/server/Common && npm shrinkwrap && cd -
-    - echo "  ✓ server/Common/npm-shrinkwrap.json generated"
-
-    # 6. document-server-package/home/npm
-    - echo "6. Installing document-server-package/home/npm..."
+    # 4. document-server-package/home/npm
+    - echo "4. Installing document-server-package/home/npm..."
     - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/document-server-package/common/documentserver/home/npm src/document-server-package/common/documentserver/home/npm
     - cd src/document-server-package/common/documentserver/home/npm && npm shrinkwrap && cd -
     - echo "  ✓ document-server-package/.../npm-shrinkwrap.json generated"
 
-    # 7. document-server-integration (--omit=dev)
-    - echo "7. Installing document-server-integration/nodejs (--omit=dev)..."
+    # 5. document-server-integration (--omit=dev)
+    - echo "5. Installing document-server-integration/nodejs (--omit=dev)..."
     - npm install --cache "${TEMP_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs src/document-server-integration/web/documentserver-example/nodejs
     - cd src/document-server-integration/web/documentserver-example/nodejs && npm shrinkwrap && cd -
     - echo "  ✓ document-server-integration/.../npm-shrinkwrap.json generated"
 
     - echo ""
-    - echo "Phase 1 complete: 9 shrinkwrap files generated"
+    - echo "Phase 1 complete:"
+    - echo "  - 5 upstream shrinkwrap dirs installed"
+    - echo "  - 4 new shrinkwrap files generated (server, sdkjs, ds-package, ds-integration)"
     - echo "Temporary cache size: $(du -sh ${TEMP_CACHE} | awk '{print $1}')"
 
   # ================================================================== #
@@ -214,20 +215,22 @@ build_npm_cache_task:
     - echo ""
     - echo "Reinstalling with shrinkwraps (npm will only cache tarballs)..."
 
-    # Install all 9 shrinkwrap dirs
+    # Install all 9 shrinkwrap dirs (5 upstream + 4 generated)
     # npm sees shrinkwrap file → only caches tarballs, NOT packuments
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs/build src/sdkjs/build
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/vendor/framework7-react src/web-apps/vendor/framework7-react
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics src/server/Metrics
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/FileConverter src/server/FileConverter
+    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Common src/server/Common
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs src/sdkjs
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server src/server
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Common src/server/Common
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/FileConverter src/server/FileConverter
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/document-server-package/common/documentserver/home/npm src/document-server-package/common/documentserver/home/npm
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs src/document-server-integration/web/documentserver-example/nodejs
 
     - echo ""
     - echo "Phase 2 complete: 9 directories cached (tarballs only)"
+    - echo "  - 5 upstream shrinkwrap: sdkjs/build, framework7-react, server/Metrics, server/FileConverter, server/Common"
+    - echo "  - 4 generated shrinkwrap: sdkjs, server, ds-package, ds-integration"
     - echo "Production cache size: $(du -sh ${NPM_CACHE}/_cacache | awk '{print $1}')"
 
   # ================================================================== #
@@ -281,26 +284,24 @@ build_npm_cache_task:
     - echo "--- Capturing artifacts ---"
     - mkdir -p src/shrinkwrap src/lockfiles
 
-    # Capture shrinkwraps (9 files)
-    - echo "Capturing shrinkwrap files..."
+    # Capture generated shrinkwraps (4 files)
+    # Note: server/Common, server/FileConverter, server/Metrics, sdkjs/build, framework7-react
+    #       all keep their upstream shrinkwrap (not captured - port will use upstream files)
+    - echo "Capturing generated shrinkwrap files..."
     - mkdir -p src/shrinkwrap/sdkjs
-    - mkdir -p src/shrinkwrap/server/Common
-    - mkdir -p src/shrinkwrap/server/FileConverter
+    - mkdir -p src/shrinkwrap/server
     - mkdir -p src/shrinkwrap/document-server-package/common/documentserver/home/npm
     - mkdir -p src/shrinkwrap/document-server-integration/web/documentserver-example/nodejs
 
     - cp src/sdkjs/npm-shrinkwrap.json src/shrinkwrap/sdkjs/
     - cp src/server/npm-shrinkwrap.json src/shrinkwrap/server/
-    - cp src/server/Common/npm-shrinkwrap.json src/shrinkwrap/server/Common/
-    - cp src/server/FileConverter/npm-shrinkwrap.json src/shrinkwrap/server/FileConverter/
     - cp src/document-server-package/common/documentserver/home/npm/npm-shrinkwrap.json src/shrinkwrap/document-server-package/common/documentserver/home/npm/
     - cp src/document-server-integration/web/documentserver-example/nodejs/npm-shrinkwrap.json src/shrinkwrap/document-server-integration/web/documentserver-example/nodejs/
 
-    # Note: sdkjs/build, framework7-react, server/Metrics keep upstream shrinkwrap (not captured)
-
     - |
       shrinkwrap_count=$(find src/shrinkwrap -name npm-shrinkwrap.json | wc -l)
-      echo "  Captured ${shrinkwrap_count} shrinkwrap files"
+      echo "  Captured ${shrinkwrap_count} generated shrinkwrap files"
+      echo "  Note: 5 upstream shrinkwrap files kept (sdkjs/build, framework7-react, server/Metrics, server/Common, server/FileConverter)"
 
     # Capture package-locks (3 files)
     - echo "Capturing package-lock files..."
@@ -385,15 +386,15 @@ build_npm_cache_task:
   smoke_test_script:
     - echo "--- Smoke-testing cache offline ---"
     - |
-      # Test all 9 shrinkwrap dirs
+      # Test all 9 shrinkwrap dirs (5 upstream + 4 generated)
       SHRINKWRAP_DIRS="
       src/sdkjs/build
       src/web-apps/vendor/framework7-react
       src/server/Metrics
+      src/server/FileConverter
+      src/server/Common
       src/sdkjs
       src/server
-      src/server/Common
-      src/server/FileConverter
       src/document-server-package/common/documentserver/home/npm
       "
 
@@ -424,7 +425,7 @@ build_npm_cache_task:
         failed=$((failed + 1))
       fi
 
-      # Test 3 package-lock dirs
+      # Test 3 package-lock dirs (actually 2, yao-pkg tested separately)
       PACKAGELOCK_DIRS="
       src/web-apps/build
       src/server/DocService
