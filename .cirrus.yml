@@ -1,31 +1,36 @@
 # .cirrus.yml
 #
-# TWO-PHASE CACHE BUILD - OPTIMAL STRATEGY
+# TWO-PHASE CACHE BUILD - PRODUCTION-MATCHED STRATEGY
 #
-# Phase 1: Generate shrinkwraps (temporary cache, then deleted)
-# Phase 2: Rebuild cache using shrinkwraps (tarballs only)
+# Phase 1: Generate/update shrinkwraps (temporary cache, then deleted)
+# Phase 2: Rebuild cache using updated shrinkwraps (tarballs only)
 # Phase 3: Install yao-pkg only (minimal packuments)
 #
+# KEY: Match NODE_ENV and flags used by actual build scripts
+#
 # Shrinkwrap files (11 dirs - tarballs only, ZERO packuments):
-#   Upstream (5):
+#   All captured after npm "fixes up" to current version
+#
+#   Production mode (NODE_ENV=production):
 #     1. sdkjs/build
-#     2. framework7-react
+#     2. framework7-react  (but with --include=dev)
 #     3. server/Metrics
-#     4. server/FileConverter  (9.3.1 already has ms)
+#     4. server/FileConverter
 #     5. server/Common
-#   Generated (6):
-#     6. sdkjs                  (created package.json with grunt)
-#     7. server                 (patched with grunt + concurrently)
-#     8. server/DocService      (patched multer + added patch-package)
-#     9. web-apps/build         (patched to add patch-package + optipng-bin)
-#    10. ds-package/home/npm
-#    11. ds-integration/nodejs  (--omit=dev)
+#     6. server
+#     7. server/DocService
+#     8. document-server-integration
+#
+#   Full mode (NODE_ENV=<unset>):
+#     9. sdkjs
+#    10. web-apps/build
+#    11. ds-package/home/npm
 #
 # Package-lock files (1 dir - minimal packuments):
-#   1. yao-pkg                 (port adds @yao-pkg/pkg)
+#   1. yao-pkg
 #
-# Expected cache size: ~95-110MB (vs ~160MB previous)
-# Packument overhead: <1% (only yao-pkg)
+# Expected cache size: ~95-110MB
+# Packument overhead: <1%
 
 env:
   DS_VERSION:          "9.3.1"
@@ -41,7 +46,7 @@ env:
   TEMP_CACHE: "/tmp/temp-cache"
 
 build_npm_cache_task:
-  name: "Build npm Cache (Optimal: 11 shrinkwrap + 1 package-lock)"
+  name: "Build npm Cache (Production-Matched)"
   trigger_type: manual
 
   freebsd_instance:
@@ -90,12 +95,8 @@ build_npm_cache_task:
     - echo "  ✓ Ports tree cloned to /tmp/freebsd-ports"
 
   copy_patches_script:
-    - echo "--- Copying FreeBSD port patches from local clone ---"
-    - mkdir -p patches
-    - PORTS_DIR="/tmp/freebsd-ports/www/onlyoffice-documentserver/files"
-    - echo "Note: web-apps/build patch will be created inline (updated with dependencies)"
-
     - echo "--- Creating patches for version 9.3.1 ---"
+    - mkdir -p patches
 
     # server/package.json patch (add grunt, change npm-run-all to concurrently)
     - |
@@ -141,16 +142,7 @@ build_npm_cache_task:
       cat > patches/patch-web-apps_build_package.json << 'PATCH_EOF'
       --- web-apps/build/package.json.orig	2026-02-23 07:24:11 UTC
       +++ web-apps/build/package.json
-      @@ -29,6 +29,8 @@
-           "iconv-lite": "^0.6.3",
-           "less-plugin-clean-css": "1.5.1",
-           "lodash": "^4.17.21",
-      +    "optipng-bin": "^5.1.0",
-      +    "patch-package": "^8.0.0",
-           "terser": "^5.20.0",
-           "vinyl-fs": "^4.0.0"
-         },
-      @@ -44,8 +46,9 @@
+      @@ -40,8 +40,12 @@
            }
          },
          "devDependencies": {
@@ -158,6 +150,10 @@ build_npm_cache_task:
       -    "grunt-mocha": "^1.2.0",
       -    "mocha": "^10.2.0"
       +    "chai": "^5.1.0"
+      +  },
+      +  "dependencies": {
+      +    "patch-package": "^8.0.0",
+      +    "optipng-bin": "5.1.0"
       +  },
       +  "scripts": {
       +    "postinstall": "patch-package"
@@ -167,33 +163,72 @@ build_npm_cache_task:
       echo "  ✓ Created patch-web-apps_build_package.json (patch-package + optipng-bin)"
 
   # ================================================================== #
-  # PHASE 1: GENERATE SHRINKWRAPS (temporary cache)                    #
+  # PHASE 1: GENERATE/UPDATE SHRINKWRAPS (temporary cache)             #
   # ================================================================== #
   phase1_generate_shrinkwraps_script:
     - echo "========================================"
-    - echo "PHASE 1: GENERATE SHRINKWRAPS"
+    - echo "PHASE 1: GENERATE/UPDATE SHRINKWRAPS"
     - echo "========================================"
     - mkdir -p "${TEMP_CACHE}"
 
-    # 1. Upstream shrinkwrap dirs (already have shrinkwrap - 5 dirs)
-    - echo "1. Installing upstream shrinkwrap dirs..."
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/sdkjs/build
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/web-apps/vendor/framework7-react
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Metrics
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/FileConverter
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Common
-    - echo "  ✓ sdkjs/build, framework7-react, server/Metrics, server/FileConverter, server/Common"
+    # GROUP A: Production mode dirs (NODE_ENV=production)
+    # These are called by python/node build scripts with NODE_ENV=production
+    - echo "GROUP A: Production mode installations"
 
-    # 2. server (delete upstream shrinkwrap, patch to add grunt, then generate new shrinkwrap)
-    - echo "2. Patching server/package.json (grunt + concurrently)..."
+    # 1. sdkjs/build (upstream shrinkwrap, production mode)
+    - echo "1. sdkjs/build (production mode)..."
+    - NODE_ENV=production npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/sdkjs/build
+    - echo "  ✓ npm fixed up shrinkwrap to current version"
+
+    # 2. framework7-react (upstream shrinkwrap, production mode BUT --include=dev)
+    - echo "2. framework7-react (production mode + --include=dev)..."
+    - NODE_ENV=production npm install --cache "${TEMP_CACHE}" --ignore-scripts --include=dev --prefix src/web-apps/vendor/framework7-react
+    - echo "  ✓ npm fixed up shrinkwrap to current version"
+
+    # 3. server/Metrics (upstream shrinkwrap, production mode)
+    - echo "3. server/Metrics (production mode)..."
+    - NODE_ENV=production npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Metrics
+    - echo "  ✓ npm fixed up shrinkwrap to current version"
+
+    # 4. server/FileConverter (upstream shrinkwrap, production mode)
+    - echo "4. server/FileConverter (production mode)..."
+    - NODE_ENV=production npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/FileConverter
+    - echo "  ✓ npm fixed up shrinkwrap to current version"
+
+    # 5. server/Common (upstream shrinkwrap, production mode)
+    - echo "5. server/Common (production mode)..."
+    - NODE_ENV=production npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/Common
+    - echo "  ✓ npm fixed up shrinkwrap to current version"
+
+    # 6. server (delete upstream shrinkwrap, patch, install production mode, generate new shrinkwrap)
+    - echo "6. server (production mode, patched)..."
     - rm -f src/server/npm-shrinkwrap.json
     - patch -p0 -d src < patches/patch-server_package.json
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server
+    - NODE_ENV=production npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server
     - cd src/server && npm shrinkwrap && cd -
     - echo "  ✓ server/npm-shrinkwrap.json generated"
 
-    # 3. sdkjs (create package.json with grunt - matching server versions)
-    - echo "3. Creating sdkjs/package.json (grunt)..."
+    # 7. server/DocService (delete upstream shrinkwrap, patch, install production mode, generate new shrinkwrap)
+    - echo "7. server/DocService (production mode, patched)..."
+    - rm -f src/server/DocService/npm-shrinkwrap.json
+    - patch -p0 -d src < patches/patch-server_DocService_package.json
+    - NODE_ENV=production npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/DocService
+    - cd src/server/DocService && npm shrinkwrap && cd -
+    - echo "  ✓ server/DocService/npm-shrinkwrap.json generated"
+
+    # 8. document-server-integration (production mode, --omit=dev matches npm ci behavior)
+    - echo "8. document-server-integration (production mode, --omit=dev)..."
+    - NODE_ENV=production npm install --cache "${TEMP_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs
+    - cd src/document-server-integration/web/documentserver-example/nodejs && npm shrinkwrap && cd -
+    - echo "  ✓ document-server-integration/npm-shrinkwrap.json generated"
+
+    # GROUP B: Full mode dirs (NODE_ENV=<unset>)
+    # These are called by Makefile with no NODE_ENV set
+    - echo ""
+    - echo "GROUP B: Full mode installations"
+
+    # 9. sdkjs (create package.json with grunt, full mode)
+    - echo "9. sdkjs (full mode, created package.json)..."
     - |
       cat > src/sdkjs/package.json << 'EOF'
       {
@@ -211,38 +246,24 @@ build_npm_cache_task:
     - echo "  ✓ sdkjs/package.json created"
     - echo "  ✓ sdkjs/npm-shrinkwrap.json generated"
 
-    # 4. server/DocService (delete upstream shrinkwrap, patch to add patch-package, generate new shrinkwrap)
-    - echo "4. Patching server/DocService/package.json (multer + patch-package)..."
-    - rm -f src/server/DocService/npm-shrinkwrap.json
-    - patch -p0 -d src < patches/patch-server_DocService_package.json
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/server/DocService
-    - cd src/server/DocService && npm shrinkwrap && cd -
-    - echo "  ✓ server/DocService/npm-shrinkwrap.json generated (includes sharp@${SHARP_VER})"
-
-    # 5. web-apps/build (patch to add patch-package + optipng-bin, generate shrinkwrap)
-    - echo "5. Patching web-apps/build/package.json (patch-package + optipng-bin)..."
+    # 10. web-apps/build (patch, full mode)
+    - echo "10. web-apps/build (full mode, patched)..."
     - patch -p0 -d src < patches/patch-web-apps_build_package.json
     - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/web-apps/build
     - cd src/web-apps/build && npm shrinkwrap && cd -
     - echo "  ✓ web-apps/build/npm-shrinkwrap.json generated"
 
-    # 6. document-server-package/home/npm
-    - echo "6. Installing document-server-package/home/npm..."
+    # 11. document-server-package/home/npm (full mode)
+    - echo "11. document-server-package/home/npm (full mode)..."
     - npm install --cache "${TEMP_CACHE}" --ignore-scripts --prefix src/document-server-package/common/documentserver/home/npm
     - cd src/document-server-package/common/documentserver/home/npm && npm shrinkwrap && cd -
-    - echo "  ✓ document-server-package/.../npm-shrinkwrap.json generated"
-
-    # 7. document-server-integration (--omit=dev)
-    - echo "7. Installing document-server-integration/nodejs (--omit=dev)..."
-    - npm install --cache "${TEMP_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs
-    - cd src/document-server-integration/web/documentserver-example/nodejs && npm shrinkwrap && cd -
-    - echo "  ✓ document-server-integration/.../npm-shrinkwrap.json generated"
+    - echo "  ✓ document-server-package/npm-shrinkwrap.json generated"
 
     - echo ""
     - echo "Phase 1 complete:"
-    - echo "  - 5 upstream shrinkwrap dirs installed"
-    - echo "  - 6 new shrinkwrap files generated"
-    - echo "    (server, sdkjs, server/DocService, web-apps/build, ds-package, ds-integration)"
+    - echo "  - 8 production mode shrinkwrap dirs (including 5 fixed-up upstream)"
+    - echo "  - 3 full mode shrinkwrap dirs"
+    - echo "  - All 11 shrinkwraps updated to npm 11.7.0 format"
     - echo "Temporary cache size: $(du -sh ${TEMP_CACHE} | awk '{print $1}')"
 
   # ================================================================== #
@@ -257,40 +278,45 @@ build_npm_cache_task:
     - echo "Creating production cache..."
     - mkdir -p "${NPM_CACHE}"
     - echo ""
-    - echo "Reinstalling with shrinkwraps (npm will only cache tarballs)..."
+    - echo "Reinstalling with updated shrinkwraps (npm will only cache tarballs)..."
 
-    # Install all 11 shrinkwrap dirs (5 upstream + 6 generated)
-    # npm sees shrinkwrap file → only caches tarballs, NOT packuments
+    # Install all 11 shrinkwrap dirs matching production/full modes
     # Remove node_modules first to force cache hydration
+
+    # Production mode dirs
+    - echo "Production mode installations:"
     - rm -rf src/sdkjs/build/node_modules
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs/build
+    - NODE_ENV=production npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs/build
     - rm -rf src/web-apps/vendor/framework7-react/node_modules
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/vendor/framework7-react
+    - NODE_ENV=production npm install --cache "${NPM_CACHE}" --ignore-scripts --include=dev --prefix src/web-apps/vendor/framework7-react
     - rm -rf src/server/Metrics/node_modules
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics
+    - NODE_ENV=production npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics
     - rm -rf src/server/FileConverter/node_modules
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/FileConverter
+    - NODE_ENV=production npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/FileConverter
     - rm -rf src/server/Common/node_modules
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Common
+    - NODE_ENV=production npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Common
+    - rm -rf src/server/node_modules
+    - NODE_ENV=production npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server
+    - rm -rf src/server/DocService/node_modules
+    - NODE_ENV=production npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService
+    - rm -rf src/document-server-integration/web/documentserver-example/nodejs/node_modules
+    - NODE_ENV=production npm install --cache "${NPM_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs
+
+    # Full mode dirs
+    - echo "Full mode installations:"
     - rm -rf src/sdkjs/node_modules
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs
-    - rm -rf src/server/node_modules
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server
-    - rm -rf src/server/DocService/node_modules
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService
     - rm -rf src/web-apps/build/node_modules
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build
     - rm -rf src/document-server-package/common/documentserver/home/npm/node_modules
     - npm install --cache "${NPM_CACHE}" --ignore-scripts --prefix src/document-server-package/common/documentserver/home/npm
-    - rm -rf src/document-server-integration/web/documentserver-example/nodejs/node_modules
-    - npm install --cache "${NPM_CACHE}" --ignore-scripts --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs
 
     - echo ""
     - echo "Phase 2 complete: 11 directories cached (tarballs only, ZERO packuments)"
-    - echo "  - 5 upstream shrinkwrap: sdkjs/build, framework7-react, server/Metrics,"
-    - echo "                           server/FileConverter, server/Common"
-    - echo "  - 6 generated shrinkwrap: sdkjs, server, server/DocService, web-apps/build,"
-    - echo "                            ds-package, ds-integration"
+    - echo "  Production mode (8): sdkjs/build, framework7-react, server/Metrics,"
+    - echo "                       server/FileConverter, server/Common, server,"
+    - echo "                       server/DocService, ds-integration"
+    - echo "  Full mode (3): sdkjs, web-apps/build, ds-package"
     - echo "Production cache size: $(du -sh ${NPM_CACHE}/_cacache | awk '{print $1}')"
 
   # ================================================================== #
@@ -301,7 +327,7 @@ build_npm_cache_task:
     - echo "PHASE 3: YAO-PKG (minimal packuments)"
     - echo "========================================"
 
-    # yao-pkg (only package-lock dir)
+    # yao-pkg (only package-lock dir, full mode matches Makefile)
     - echo "Installing yao-pkg (@yao-pkg/pkg, @esbuild packages)..."
     - mkdir -p src/yao-pkg
     - |
@@ -325,33 +351,54 @@ build_npm_cache_task:
 
   capture_artifacts_script:
     - echo "--- Capturing artifacts ---"
-    - mkdir -p src/shrinkwrap src/lockfiles
+    - mkdir -p src/shrinkwrap
 
-    # Capture generated shrinkwraps (6 files)
-    # Note: server/Common, server/FileConverter, server/Metrics, sdkjs/build, framework7-react
-    #       all keep their upstream shrinkwrap (not captured - port will use upstream files)
-    - echo "Capturing generated shrinkwrap files..."
-    - mkdir -p src/shrinkwrap/sdkjs
-    - mkdir -p src/shrinkwrap/server
-    - mkdir -p src/shrinkwrap/server/DocService
+    # Capture ALL 11 shrinkwrap files (including fixed-up upstream ones)
+    - echo "Capturing all 11 shrinkwrap files..."
+    - mkdir -p src/shrinkwrap/sdkjs/build
+    - mkdir -p src/shrinkwrap/web-apps/vendor/framework7-react
     - mkdir -p src/shrinkwrap/web-apps/build
+    - mkdir -p src/shrinkwrap/server
+    - mkdir -p src/shrinkwrap/server/Metrics
+    - mkdir -p src/shrinkwrap/server/FileConverter
+    - mkdir -p src/shrinkwrap/server/Common
+    - mkdir -p src/shrinkwrap/server/DocService
+    - mkdir -p src/shrinkwrap/sdkjs
     - mkdir -p src/shrinkwrap/document-server-package/common/documentserver/home/npm
     - mkdir -p src/shrinkwrap/document-server-integration/web/documentserver-example/nodejs
 
-    - cp src/sdkjs/npm-shrinkwrap.json src/shrinkwrap/sdkjs/
+    # Copy all shrinkwraps (production mode first, then full mode)
+    - echo "  Production mode shrinkwraps:"
+    - cp src/sdkjs/build/npm-shrinkwrap.json src/shrinkwrap/sdkjs/build/
+    - echo "    ✓ sdkjs/build"
+    - cp src/web-apps/vendor/framework7-react/npm-shrinkwrap.json src/shrinkwrap/web-apps/vendor/framework7-react/
+    - echo "    ✓ framework7-react"
+    - cp src/server/Metrics/npm-shrinkwrap.json src/shrinkwrap/server/Metrics/
+    - echo "    ✓ server/Metrics"
+    - cp src/server/FileConverter/npm-shrinkwrap.json src/shrinkwrap/server/FileConverter/
+    - echo "    ✓ server/FileConverter"
+    - cp src/server/Common/npm-shrinkwrap.json src/shrinkwrap/server/Common/
+    - echo "    ✓ server/Common"
     - cp src/server/npm-shrinkwrap.json src/shrinkwrap/server/
+    - echo "    ✓ server"
     - cp src/server/DocService/npm-shrinkwrap.json src/shrinkwrap/server/DocService/
-    - cp src/web-apps/build/npm-shrinkwrap.json src/shrinkwrap/web-apps/build/
-    - cp src/document-server-package/common/documentserver/home/npm/npm-shrinkwrap.json src/shrinkwrap/document-server-package/common/documentserver/home/npm/
+    - echo "    ✓ server/DocService"
     - cp src/document-server-integration/web/documentserver-example/nodejs/npm-shrinkwrap.json src/shrinkwrap/document-server-integration/web/documentserver-example/nodejs/
+    - echo "    ✓ document-server-integration"
+
+    - echo "  Full mode shrinkwraps:"
+    - cp src/sdkjs/npm-shrinkwrap.json src/shrinkwrap/sdkjs/
+    - echo "    ✓ sdkjs"
+    - cp src/web-apps/build/npm-shrinkwrap.json src/shrinkwrap/web-apps/build/
+    - echo "    ✓ web-apps/build"
+    - cp src/document-server-package/common/documentserver/home/npm/npm-shrinkwrap.json src/shrinkwrap/document-server-package/common/documentserver/home/npm/
+    - echo "    ✓ document-server-package"
 
     - |
       shrinkwrap_count=$(find src/shrinkwrap -name npm-shrinkwrap.json | wc -l)
-      echo "  Captured ${shrinkwrap_count} generated shrinkwrap files"
-      echo "  Note: 5 upstream shrinkwrap files kept (sdkjs/build, framework7-react,"
-      echo "        server/Metrics, server/Common, server/FileConverter)"
-
-    # No package-locks to capture (yao-pkg files are separate)
+      echo ""
+      echo "  Total: ${shrinkwrap_count} shrinkwrap files captured"
+      echo "  All updated to npm 11.7.0 format (no fixup warnings during port build)"
 
     # Capture created sdkjs/package.json
     - echo "Capturing sdkjs/package.json..."
@@ -429,24 +476,64 @@ build_npm_cache_task:
   smoke_test_script:
     - echo "--- Smoke-testing cache offline ---"
     - |
-      # Test all 11 shrinkwrap dirs (5 upstream + 6 generated)
-      SHRINKWRAP_DIRS="
-      src/sdkjs/build
-      src/web-apps/vendor/framework7-react
-      src/server/Metrics
-      src/server/FileConverter
-      src/server/Common
-      src/sdkjs
-      src/server
-      src/server/DocService
-      src/web-apps/build
-      src/document-server-package/common/documentserver/home/npm
-      "
+      # Test all 11 shrinkwrap dirs with appropriate NODE_ENV
 
       success=0
       failed=0
 
-      for npm_dir in ${SHRINKWRAP_DIRS}; do
+      # Production mode dirs
+      echo "Testing production mode dirs:"
+      PROD_DIRS="
+      src/sdkjs/build
+      src/server/Metrics
+      src/server/FileConverter
+      src/server/Common
+      src/server
+      src/server/DocService
+      "
+
+      for npm_dir in ${PROD_DIRS}; do
+        if [ -f "${npm_dir}/package.json" ]; then
+          rm -rf "${npm_dir}/node_modules"
+          if NODE_ENV=production npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
+              --prefix "${npm_dir}" >/dev/null 2>&1; then
+            success=$((success + 1))
+          else
+            echo "  ✗ FAILED: ${npm_dir#src/}"
+            failed=$((failed + 1))
+          fi
+        fi
+      done
+
+      # framework7-react (production + --include=dev)
+      rm -rf src/web-apps/vendor/framework7-react/node_modules
+      if NODE_ENV=production npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
+          --include=dev --prefix src/web-apps/vendor/framework7-react >/dev/null 2>&1; then
+        success=$((success + 1))
+      else
+        echo "  ✗ FAILED: framework7-react"
+        failed=$((failed + 1))
+      fi
+
+      # document-server-integration (production + --omit=dev)
+      rm -rf src/document-server-integration/web/documentserver-example/nodejs/node_modules
+      if NODE_ENV=production npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
+          --omit=dev --prefix src/document-server-integration/web/documentserver-example/nodejs >/dev/null 2>&1; then
+        success=$((success + 1))
+      else
+        echo "  ✗ FAILED: document-server-integration"
+        failed=$((failed + 1))
+      fi
+
+      # Full mode dirs
+      echo "Testing full mode dirs:"
+      FULL_DIRS="
+      src/sdkjs
+      src/web-apps/build
+      src/document-server-package/common/documentserver/home/npm
+      "
+
+      for npm_dir in ${FULL_DIRS}; do
         if [ -f "${npm_dir}/package.json" ]; then
           rm -rf "${npm_dir}/node_modules"
           if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
@@ -459,18 +546,7 @@ build_npm_cache_task:
         fi
       done
 
-      # Test integration (--omit=dev)
-      INTEGRATION_DIR="src/document-server-integration/web/documentserver-example/nodejs"
-      rm -rf "${INTEGRATION_DIR}/node_modules"
-      if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
-          --omit=dev --prefix "${INTEGRATION_DIR}" >/dev/null 2>&1; then
-        success=$((success + 1))
-      else
-        echo "  ✗ FAILED: document-server-integration/nodejs"
-        failed=$((failed + 1))
-      fi
-
-      # Test yao-pkg (package-lock)
+      # Test yao-pkg (package-lock, full mode)
       rm -rf src/yao-pkg/node_modules
       if npm install --offline --cache "${NPM_CACHE}" --ignore-scripts \
           --prefix src/yao-pkg "@yao-pkg/pkg@${YAO_PKG_VER}" >/dev/null 2>&1; then
@@ -511,35 +587,33 @@ build_npm_cache_task:
       echo "  Packuments:         ${packument_size}"
     - |
       shrinkwrap_count=$(find src/shrinkwrap -name npm-shrinkwrap.json 2>/dev/null | wc -l)
-      echo "  Shrinkwrap files:   ${shrinkwrap_count} generated"
+      echo "  Shrinkwrap files:   ${shrinkwrap_count} (all updated to npm 11.7.0)"
     - echo ""
     - echo "Strategy summary:"
-    - echo "  Phase 1: Generated 6 shrinkwrap files (temp cache deleted)"
-    - echo "  Phase 2: Installed 11 dirs with shrinkwrap (tarballs only, ZERO packuments)"
+    - echo "  Phase 1: Installed/updated all 11 dirs (npm fixed up old shrinkwraps)"
+    - echo "  Phase 2: Reinstalled 11 dirs with updated shrinkwraps (tarballs only)"
     - echo "  Phase 3: Installed yao-pkg with package-lock (minimal packuments)"
     - echo ""
+    - echo "All shrinkwraps captured and updated to npm 11.7.0 format"
+    - echo "Port build will see NO 'old lockfile' warnings"
+    - echo ""
     - echo "Shrinkwrap dirs (11):"
-    - echo "  Upstream (5): sdkjs/build, framework7-react, server/Metrics,"
-    - echo "                server/Common, server/FileConverter"
-    - echo "  Generated (6): sdkjs, server, server/DocService, web-apps/build,"
-    - echo "                 ds-package, ds-integration"
+    - echo "  Production mode (8): sdkjs/build, framework7-react, server/Metrics,"
+    - echo "                       server/FileConverter, server/Common, server,"
+    - echo "                       server/DocService, ds-integration"
+    - echo "  Full mode (3): sdkjs, web-apps/build, ds-package"
     - echo ""
     - echo "Package-lock dirs (1): yao-pkg only"
-    - echo ""
-    - echo "Port Makefile benefits:"
-    - echo "  - 6 npm install commands eliminated"
-    - echo "  - All dependencies pinned in shrinkwraps"
-    - echo "  - Cache ~40% smaller than original"
 
   commit_script:
     - DATE=$(date -u +%Y%m%d%H%M)
-    - NEW_TAG="${DS_TAG}-${DATE}"
+    - NEW_TAG="${DS_TAG}-${DATE}-prodmatch"
     - echo "Committing as tag ${NEW_TAG}"
 
     - rm -rf "${NPM_CACHE}/_logs"
     - rm -rf "${NPM_CACHE}/_update-notifier-last-checked"
 
-    - rm -rf _cacache shrinkwrap lockfiles
+    - rm -rf _cacache shrinkwrap
     - cp -r "${NPM_CACHE}/_cacache" _cacache
     - cp -r src/shrinkwrap shrinkwrap
     - cp src/sdkjs-package.json sdkjs-package.json
@@ -547,15 +621,15 @@ build_npm_cache_task:
     - cp src/yao-pkg-package-lock.json yao-pkg-package-lock.json
 
     - git add _cacache shrinkwrap/ sdkjs-package.json yao-pkg-package.json yao-pkg-package-lock.json "extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
-    - git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE}) - optimal (11 shrinkwrap + 1 package-lock)"
-    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} optimal cache (${DATE})"
+    - git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE}) - production-matched (11 shrinkwrap + 1 package-lock, all updated)"
+    - git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} production-matched cache (${DATE})"
     - git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${CIRRUS_REPO_FULL_NAME}.git" HEAD --tags
     - echo ""
     - echo "✓ Pushed tag ${NEW_TAG}"
     - echo ""
     - echo "Artifacts committed:"
     - echo "  - _cacache/ (npm cache, ~95-110MB)"
-    - echo "  - shrinkwrap/ (6 generated shrinkwrap files)"
+    - echo "  - shrinkwrap/ (ALL 11 shrinkwrap files, updated to npm 11.7.0)"
     - echo "  - sdkjs-package.json (created file)"
     - echo "  - yao-pkg files"
     - echo "  - extra-patch-pkg-fetch patch"
