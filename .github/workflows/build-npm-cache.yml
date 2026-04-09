@@ -65,11 +65,14 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ env.NODE_VER }}
 
       # Install the exact npm version that www/npm-node20 provides in the jail.
       - name: Install npm@${{ github.event.inputs.npm_version }} to match jail
         run: |
+          mkdir -p ~/.npm-global
+          npm config set prefix ~/.npm-global
+          echo "$HOME/.npm-global/bin" >> $GITHUB_PATH
           npm install -g "npm@${{ env.NPM_VER }}"
 
       - name: Verify npm version
