@@ -489,7 +489,7 @@ jobs:
             cut -d'"' -f4 | sed 's/\^//')
           echo "pkg-fetch version: ${PKG_FETCH_VERSION}"
           
-          NODE_MAJOR=$(echo "${NODE_VERSION}" | cut -d'.' -f1)
+          NODE_MAJOR=$(echo "${NODE_VER}" | cut -d'.' -f1)
           echo "Node major: ${NODE_MAJOR}"
           
           mkdir -p freebsd-patches
