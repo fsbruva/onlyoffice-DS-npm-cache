@@ -479,6 +479,7 @@ jobs:
       - name: Generate pkg-fetch patch
         run: |
           echo "--- Generating pkg-fetch FreeBSD node patch ---"
+          rm -rf "${GITHUB_WORKSPACE}/*.cpp.patch"
           mkdir -p "${{ github.workspace }}/patch-workspace"
           cd "${{ github.workspace }}/patch-workspace"
           
@@ -649,7 +650,7 @@ jobs:
           
           rm -rf "${NPM_CACHE}/_logs" "${NPM_CACHE}/_update-notifier-last-checked"
           
-          rm -rf _cacache shrinkwrap *.cpp.patch
+          rm -rf _cacache shrinkwrap
           cp -r "${NPM_CACHE}/_cacache" _cacache
           cp -r src/shrinkwrap shrinkwrap
           
