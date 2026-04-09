@@ -114,7 +114,7 @@ jobs:
       - name: Clone FreeBSD ports tree
         run: |
           echo "--- Cloning FreeBSD ports tree (shallow) ---"
-          git clone --depth 1 https://github.com/freebsd/freebsd-ports.git /tmp/freebsd-ports
+          git clone --depth 1 https://github.com/freebsd/freebsd-ports.git "${{ github.workspace }}/freebsd-ports"
           echo "  ✓ Ports tree cloned"
 
       - name: Create patches
@@ -479,8 +479,8 @@ jobs:
       - name: Generate pkg-fetch patch
         run: |
           echo "--- Generating pkg-fetch FreeBSD node patch ---"
-          mkdir -p /tmp/patch-workspace
-          cd /tmp/patch-workspace
+          mkdir -p "${{ github.workspace }}/patch-workspace"
+          cd "${{ github.workspace }}/patch-workspace"
           
           npm install --cache "${NPM_CACHE}" patch-package
           npm install --cache "${NPM_CACHE}" "@yao-pkg/pkg@${YAO_PKG_VER}"
@@ -493,7 +493,7 @@ jobs:
           echo "Node major: ${NODE_MAJOR}"
           
           mkdir -p freebsd-patches
-          NODE_PORT_DIR="/tmp/freebsd-ports/www/node${NODE_MAJOR}/files"
+          NODE_PORT_DIR="${{ github.workspace }}/freebsd-ports/www/node${NODE_MAJOR}/files"
           
           if [ -d "${NODE_PORT_DIR}" ]; then
             cp ${NODE_PORT_DIR}/patch-* freebsd-patches/ 2>/dev/null || true
@@ -502,14 +502,14 @@ jobs:
           fi
           
           cd node_modules/@yao-pkg/pkg-fetch/patches
-          for patch_file in /tmp/patch-workspace/freebsd-patches/patch-*; do
+          for patch_file in "${{ github.workspace }}"/patch-workspace/freebsd-patches/patch-*; do
             if [ -f "${patch_file}" ]; then
               sed 's#^--- #--- node/#g; s#^+++ #+++ node/#g' "${patch_file}" >> \
                 "node.v${NODE_VERSION}.cpp.patch"
             fi
           done
           
-          cd /tmp/patch-workspace
+          cd "${{ github.workspace }}/patch-workspace"
           npx patch-package "@yao-pkg/pkg-fetch"
           
           cd patches
