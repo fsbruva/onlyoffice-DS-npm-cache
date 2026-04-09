@@ -296,7 +296,7 @@ jobs:
           mkdir -p src/yao-pkg-arm64
           cat > src/yao-pkg-arm64/package.json << 'EOF'
           {
-            "name": "yao-pkg-arm64",
+            "name": "yao-pkg-seed",
             "version": "1.0.0",
             "private": true,
             "dependencies": {}
@@ -505,7 +505,7 @@ jobs:
           for patch_file in "${{ github.workspace }}"/patch-workspace/freebsd-patches/patch-*; do
             if [ -f "${patch_file}" ]; then
               sed 's#^--- #--- node/#g; s#^+++ #+++ node/#g' "${patch_file}" >> \
-                "node.v${NODE_VERSION}.cpp.patch"
+                "node.v${NODE_VER}.cpp.patch"
             fi
           done
           
@@ -514,14 +514,14 @@ jobs:
           
           cd patches
           PATCH_FILE=$(ls @yao-pkg+pkg-fetch+*.patch 2>/dev/null | head -1)
-          UPSTREAM_URL="https://github.com/yao-pkg/pkg-fetch/raw/refs/tags/v${PKG_FETCH_VERSION}/patches/node.v${NODE_VERSION}.cpp.patch"
+          UPSTREAM_URL="https://github.com/yao-pkg/pkg-fetch/raw/refs/tags/v${PKG_FETCH_VERSION}/patches/node.v${NODE_VER}.cpp.patch"
           
           {
             echo "${UPSTREAM_URL}"
             echo "+ local FreeBSD patches"
             grep -v '^diff --git\|^index ' "${PATCH_FILE}" | \
               sed 's#^--- a/node_modules#--- yao-pkg/node_modules#g; s#^+++ b/node_modules#+++ yao-pkg/node_modules#g'
-          } > "${GITHUB_WORKSPACE}/extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
+          } > "${GITHUB_WORKSPACE}/extra-patch-pkg-fetch_patches_node.v${NODE_VER}.cpp.patch"
 
       - name: Smoke test
         run: |
@@ -659,7 +659,7 @@ jobs:
             yao-pkg-npm-shrinkwrap-aarch64.json \
             yao-pkg-package-amd64.json \
             yao-pkg-package-aarch64.json \
-            "extra-patch-pkg-fetch_patches_node.v${NODE_VERSION}.cpp.patch"
+            "extra-patch-pkg-fetch_patches_node.v${NODE_VER}.cpp.patch"
           
           git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE})"
           git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} zero-packument cache (${DATE})"
