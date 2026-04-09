@@ -649,7 +649,7 @@ jobs:
           
           rm -rf "${NPM_CACHE}/_logs" "${NPM_CACHE}/_update-notifier-last-checked"
           
-          rm -rf _cacache shrinkwrap *.cpp.patch *.json
+          rm -rf _cacache shrinkwrap *.cpp.patch
           cp -r "${NPM_CACHE}/_cacache" _cacache
           cp -r src/shrinkwrap shrinkwrap
           
