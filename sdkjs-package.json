@@ -1,0 +1,9 @@
+{
+  "name": "sdkjs-build-deps",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "grunt-cli": "^1.5.0",
+    "grunt": "^1.6.1"
+  }
+}
