@@ -59,6 +59,8 @@ jobs:
   build-cache:
     name: Build npm Cache
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 90
 
     steps:
@@ -422,6 +424,12 @@ jobs:
           echo "Phase 2 complete: 13 directories cached"
           du -sh "${NPM_CACHE}/_cacache"
 
+      - name: Clean up artifacts
+        run: |
+          echo "--- Cleaning up old artifacts ---"
+          rm -rf _cacache shrinkwrap *.cpp.patch \
+                 yao-pkg-*.json sdkjs-package.json
+
       - name: Capture artifacts
         run: |
           echo "--- Capturing artifacts ---"
@@ -468,8 +476,7 @@ jobs:
           # Copy yao-pkg files
           cp src/yao-pkg-arm64/npm-shrinkwrap.json yao-pkg-npm-shrinkwrap-aarch64.json
           cp src/yao-pkg-x64/npm-shrinkwrap.json yao-pkg-npm-shrinkwrap-amd64.json
-          cp src/yao-pkg-arm64/package.json yao-pkg-package-aarch64.json
-          cp src/yao-pkg-x64/package.json yao-pkg-package-amd64.json
+          cp src/yao-pkg-arm64/package.json yao-pkg-package.json
           
           # Copy created package.json
           cp src/sdkjs/package.json sdkjs-package.json
@@ -650,7 +657,6 @@ jobs:
           
           rm -rf "${NPM_CACHE}/_logs" "${NPM_CACHE}/_update-notifier-last-checked"
           
-          rm -rf _cacache shrinkwrap
           cp -r "${NPM_CACHE}/_cacache" _cacache
           cp -r src/shrinkwrap shrinkwrap
           
@@ -658,8 +664,7 @@ jobs:
             sdkjs-package.json \
             yao-pkg-npm-shrinkwrap-amd64.json \
             yao-pkg-npm-shrinkwrap-aarch64.json \
-            yao-pkg-package-amd64.json \
-            yao-pkg-package-aarch64.json \
+            yao-pkg-package.json \
             "extra-patch-pkg-fetch_patches_node.v${NODE_VER}.cpp.patch"
           
           git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE})"
@@ -667,7 +672,7 @@ jobs:
           git push origin HEAD --tags
           
           echo ""
-          echo "✓ Pushed tag ${NEW_TAG}"
+          echo "Pushed tag ${NEW_TAG}"
           echo ""
           echo "Update GH_TUPLE to:"
           echo "  fsbruva:onlyoffice-DS-npm-cache:${NEW_TAG}:npm_cache"
