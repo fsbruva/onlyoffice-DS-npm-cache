@@ -659,8 +659,7 @@ jobs:
       - name: Prep for release
         run: |
           rm -rf "${NPM_CACHE}/_logs" "${NPM_CACHE}/_update-notifier-last-checked"
-          cp -r "${NPM_CACHE}/_cacache" _cacache
-          cp -r src/shrinkwrap shrinkwrap
+           cp -r src/shrinkwrap shrinkwrap
 
       # ----------------------------
       # Create tarball INCLUDING _cacache
@@ -675,7 +674,7 @@ jobs:
           mkdir "$DIR_NAME"
 
           # Copy everything into it (INCLUDING _cacache)
-          cp -a "${NPM_CACHE}/_cacache "$DIR_NAME"/_cacache
+          cp -a "${NPM_CACHE}/_cacache" "$DIR_NAME"/_cacache
           cp -a extra-patch-pkg-fetch_patches_node.v*.patch "$DIR_NAME"/
           cp -a sdkjs-package.json "$DIR_NAME"/
           cp -a shrinkwrap "$DIR_NAME"/
@@ -689,14 +688,6 @@ jobs:
               -czf "$TAR_NAME" "$DIR_NAME"
 
       # ----------------------------
-      # Remove _cacache before commit
-      # ----------------------------
-      - name: Remove _cacache from git tree
-        run: |
-          rm -rf _cacache
-
-
-     # ----------------------------
       # Commit metadata files only
       # ----------------------------
       - name: Commit metadata
