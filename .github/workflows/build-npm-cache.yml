@@ -45,7 +45,9 @@ on:
          description: 'npm version used in the jail (must match www/npm-node20 exactly)'
          required: true
          default: '11.12.1'
-
+  push:
+    tags:
+      - "v*"
 
 env:
   DS_TAG:      "v${{ github.event.inputs.ds_version }}.${{ github.event.inputs.ds_build }}"
@@ -87,11 +89,6 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
-
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Clone source repositories
         run: |
@@ -649,30 +646,81 @@ jobs:
           echo "Flags used: --legacy-peer-deps --no-audit --no-fund"
           echo "Platform flags: --os freebsd --cpu x64 (or arm64)"
 
-      - name: Commit and push
+      - name: Set variables
+        id: vars
         run: |
-          DATE=$(date -u +%Y%m%d%H%M)
-          NEW_TAG="${DS_TAG}-${DATE}"
-          echo "Committing as tag ${NEW_TAG}"
-          
+          TAG="${DS_TAG}"
+          DATE="$(date +%Y%m%d%H%M)"
+          RELEASE_TAG="${TAG}-${DATE}"
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Prep for release
+        run: |
           rm -rf "${NPM_CACHE}/_logs" "${NPM_CACHE}/_update-notifier-last-checked"
-          
           cp -r "${NPM_CACHE}/_cacache" _cacache
           cp -r src/shrinkwrap shrinkwrap
-          
-          git add _cacache shrinkwrap/ \
+
+      # ----------------------------
+      # Create tarball INCLUDING _cacache
+      # ----------------------------
+      - name: Create release tarball
+        run: |
+          TAR_NAME="onlyoffice-DS-npm-cache-${{ steps.vars.outputs.release_tag }}.tar.gz"
+
+          tar -czf "$TAR_NAME" \
+            _cacache \
+            extra-patch-pkg-fetch_patches_node.v*.patch \
             sdkjs-package.json \
-            yao-pkg-npm-shrinkwrap-amd64.json \
-            yao-pkg-npm-shrinkwrap-aarch64.json \
-            yao-pkg-package.json \
-            "extra-patch-pkg-fetch_patches_node.v${NODE_VER}.cpp.patch"
-          
-          git commit -m "npm cache for OnlyOffice DS ${DS_TAG} (${DATE})"
-          git tag "${NEW_TAG}" -m "OnlyOffice DS ${DS_TAG} zero-packument cache (${DATE})"
-          git push origin HEAD --tags
-          
-          echo ""
-          echo "Pushed tag ${NEW_TAG}"
-          echo ""
-          echo "Update GH_TUPLE to:"
-          echo "  fsbruva:onlyoffice-DS-npm-cache:${NEW_TAG}:npm_cache"
+            shrinkwrap \
+            yao-pkg-npm-shrinkwrap-*.json \
+            yao-pkg-package.json
+
+          echo "TAR_NAME=$TAR_NAME" >> $GITHUB_ENV
+
+      # ----------------------------
+      # Remove _cacache before commit
+      # ----------------------------
+      - name: Remove _cacache from git tree
+        run: |
+          rm -rf _cacache
+
+
+     # ----------------------------
+      # Commit metadata files only
+      # ----------------------------
+      - name: Commit metadata
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          git add \
+            extra-patch-pkg-fetch_patches_node.v*.patch \
+            sdkjs-package.json \
+            shrinkwrap \
+            yao-pkg-npm-shrinkwrap-*.json \
+            yao-pkg-package.json
+
+          git commit -m "Update npm cache metadata for ${{ steps.vars.outputs.release_tag }}" || echo "No changes"
+
+
+      # ----------------------------
+      # Create tag for BOTH commit + release
+      # ----------------------------
+      - name: Create tag
+        run: |
+          git tag "${{ steps.vars.outputs.release_tag }}"
+          git push origin "${{ steps.vars.outputs.release_tag }}"
+
+      # ----------------------------
+      # Create GitHub Release + upload tarball
+      # ----------------------------
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.vars.outputs.release_tag }}" \
+            "$TAR_NAME" \
+            --title "NPM Cache ${{ steps.vars.outputs.release_tag }}" \
+            --notes "Offline npm cache for OnlyOffice DocumentServer"
