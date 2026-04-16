@@ -687,6 +687,8 @@ jobs:
               --owner=0 --group=0 --numeric-owner \
               -czf "$TAR_NAME" "$DIR_NAME"
 
+          echo "TAR_NAME=$TAR_NAME" >> $GITHUB_ENV
+
       # ----------------------------
       # Commit metadata files only
       # ----------------------------
