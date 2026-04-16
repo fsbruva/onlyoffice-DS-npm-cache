@@ -667,17 +667,26 @@ jobs:
       # ----------------------------
       - name: Create release tarball
         run: |
-          TAR_NAME="onlyoffice-DS-npm-cache-${{ steps.vars.outputs.release_tag }}.tar.gz"
+          RELEASE_TAG="${{ steps.vars.outputs.release_tag }}"
+          DIR_NAME="onlyoffice-DS-npm-cache-${RELEASE_TAG}"
+          TAR_NAME="${DIR_NAME}.tar.gz"
 
-          tar -czf "$TAR_NAME" \
-            _cacache \
-            extra-patch-pkg-fetch_patches_node.v*.patch \
-            sdkjs-package.json \
-            shrinkwrap \
-            yao-pkg-npm-shrinkwrap-*.json \
-            yao-pkg-package.json
+          # Create staging directory
+          mkdir "$DIR_NAME"
 
-          echo "TAR_NAME=$TAR_NAME" >> $GITHUB_ENV
+          # Copy everything into it (INCLUDING _cacache)
+          cp -a "${NPM_CACHE}/_cacache "$DIR_NAME"/_cacache
+          cp -a extra-patch-pkg-fetch_patches_node.v*.patch "$DIR_NAME"/
+          cp -a sdkjs-package.json "$DIR_NAME"/
+          cp -a shrinkwrap "$DIR_NAME"/
+          cp -a yao-pkg-npm-shrinkwrap-*.json "$DIR_NAME"/
+          cp -a yao-pkg-package.json "$DIR_NAME"/
+
+          # Create tarball with stable ordering (important for distinfo)
+          tar --sort=name \
+              --mtime='UTC 2020-01-01' \
+              --owner=0 --group=0 --numeric-owner \
+              -czf "$TAR_NAME" "$DIR_NAME"
 
       # ----------------------------
       # Remove _cacache before commit
