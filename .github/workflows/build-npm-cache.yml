@@ -673,12 +673,12 @@ jobs:
           cp -a yao-pkg-package.json "$DIR_NAME"/
 
           # Write build manifest (tarball-only, not committed to the repo)
-          cat > "$DIR_NAME/build-info.txt" << EOF
-Node:               ${{ env.NODE_VER }}
-npm:                ${{ env.NPM_VER }}
-"@yao-pkg/pkg":       ${{ env.YAO_PKG_VER }}
-"@yao-pkg/pkg-fetch": ${{ env.PKG_FETCH_VER }}
-EOF
+          {
+            echo "Node:               ${{ env.NODE_VER }}"
+            echo "npm:                ${{ env.NPM_VER }}"
+            echo "@yao-pkg/pkg:       ${{ env.YAO_PKG_VER }}"
+            echo "@yao-pkg/pkg-fetch: ${{ env.PKG_FETCH_VER }}"
+          } > "$DIR_NAME/build-info.txt"
 
           # Create tarball with stable ordering (important for distinfo)
           tar --sort=name \
