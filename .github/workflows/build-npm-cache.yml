@@ -676,8 +676,8 @@ jobs:
           cat > "$DIR_NAME/build-info.txt" << EOF
 Node:               ${{ env.NODE_VER }}
 npm:                ${{ env.NPM_VER }}
-@yao-pkg/pkg:       ${{ env.YAO_PKG_VER }}
-@yao-pkg/pkg-fetch: ${{ env.PKG_FETCH_VER }}
+"@yao-pkg/pkg":       ${{ env.YAO_PKG_VER }}
+"@yao-pkg/pkg-fetch": ${{ env.PKG_FETCH_VER }}
 EOF
 
           # Create tarball with stable ordering (important for distinfo)
