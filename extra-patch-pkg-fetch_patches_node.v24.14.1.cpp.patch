@@ -1,0 +1,173 @@
+https://github.com/yao-pkg/pkg-fetch/raw/refs/tags/v3.5.33/patches/node.v24.14.1.cpp.patch
++ local FreeBSD patches
+--- yao-pkg/node_modules/@yao-pkg/pkg-fetch/patches/node.v24.14.1.cpp.patch
++++ yao-pkg/node_modules/@yao-pkg/pkg-fetch/patches/node.v24.14.1.cpp.patch
+@@ -861,3 +861,168 @@ index f007c65232..002a00a6ae 100644
+              'cflags_cc!': [ '-fno-rtti' ],
+            }],
+            [ 'OS == "mac" or OS == "ios"', {
++--- node/tools/v8_gypfiles/v8.gyp.orig	2025-07-17 21:44:08 UTC
+++++ node/tools/v8_gypfiles/v8.gyp
++@@ -1314,9 +1314,6 @@
++         # to implement atomic memory access.
++         # Clang needs it for some atomic operations (https://clang.llvm.org/docs/Toolchain.html#atomics-library).
++         ['(OS=="linux" and clang==1) or (v8_current_cpu in ["mips64", "mips64el", "arm", "riscv64", "loong64"])', {
++-          'link_settings': {
++-            'libraries': ['-latomic', ],
++-          },
++         }],
++       ],
++     },  # v8_base_without_compiler
++--- node/deps/openssl/openssl-cl_no_asm.gypi.orig	2023-10-24 10:04:40 UTC
+++++ node/deps/openssl/openssl-cl_no_asm.gypi
++@@ -1,4 +1,5 @@
++ {
+++  'defines': ['OPENSSL_NO_ASM'],
++   'conditions': [
++     ['target_arch=="ppc64" and OS in ("aix", "os400")', {
++       'includes': ['config/archs/aix64-gcc-as/no-asm/openssl-cl.gypi'],
++@@ -45,7 +46,7 @@
++       'includes': ['config/archs/linux64-loongarch64/no-asm/openssl-cl.gypi'],
++     }, {
++       # Other architectures don't use assembly
++-      'includes': ['config/archs/linux-x86_64/no-asm/openssl-cl.gypi'],
+++      'includes': ['config/archs/linux-elf/no-asm/openssl-cl.gypi'],
++     }],
++   ],
++ }
++--- node/deps/openssl/openssl_no_asm.gypi.orig	2025-05-06 12:36:29 UTC
+++++ node/deps/openssl/openssl_no_asm.gypi
++@@ -46,7 +46,7 @@
++       'includes': ['config/archs/linux64-loongarch64/no-asm/openssl.gypi'],
++     }, {
++       # Other architectures don't use assembly
++-      'includes': ['config/archs/linux-x86_64/no-asm/openssl.gypi'],
+++      'includes': ['config/archs/linux-elf/no-asm/openssl.gypi'],
++     }],
++   ],
++ }
++--- node/deps/v8/src/base/platform/platform-freebsd.cc.orig	2023-05-16 06:58:20 UTC
+++++ node/deps/v8/src/base/platform/platform-freebsd.cc
++@@ -82,8 +82,8 @@ std::vector<OS::SharedLibraryAddress> OS::GetSharedLib
++             lib_name = std::string(path);
++           }
++           result.push_back(SharedLibraryAddress(
++-              lib_name, reinterpret_cast<uintptr_t>(map->kve_start),
++-              reinterpret_cast<uintptr_t>(map->kve_end)));
+++              lib_name, static_cast<uintptr_t>(map->kve_start),
+++              static_cast<uintptr_t>(map->kve_end)));
++         }
++ 
++         start += ssize;
++--- node/deps/v8/src/codegen/arm/cpu-arm.cc.orig	2023-05-16 06:58:20 UTC
+++++ node/deps/v8/src/codegen/arm/cpu-arm.cc
++@@ -2,12 +2,15 @@
++ // Use of this source code is governed by a BSD-style license that can be
++ // found in the LICENSE file.
++ 
+++#include "include/v8config.h"
+++
++ // CPU specific code for arm independent of OS goes here.
++ #ifdef __arm__
++ #ifdef __QNXNTO__
++ #include <sys/mman.h>  // for cache flushing.
++ #undef MAP_TYPE
++ #elif V8_OS_FREEBSD
+++#include <sys/cdefs.h>
++ #include <machine/sysarch.h>  // for cache flushing
++ #include <sys/types.h>
++ #elif V8_OS_STARBOARD
++--- node/deps/v8/src/codegen/ppc/constants-ppc.h.orig	2025-05-06 12:36:30 UTC
+++++ node/deps/v8/src/codegen/ppc/constants-ppc.h
++@@ -35,7 +35,7 @@
++ #define ABI_PASSES_HANDLES_IN_REGS 0
++ #endif
++ 
++-#if !V8_HOST_ARCH_PPC64 || !V8_TARGET_ARCH_PPC64 || V8_TARGET_LITTLE_ENDIAN || \
+++#if !V8_HOST_ARCH_PPC64 || !V8_TARGET_ARCH_PPC64 || \
++     (defined(_CALL_ELF) && _CALL_ELF == 2)
++ #define ABI_RETURNS_OBJECT_PAIRS_IN_REGS 1
++ #else
++@@ -44,7 +44,7 @@
++ 
++ #if !V8_HOST_ARCH_PPC64 ||   \
++     (V8_TARGET_ARCH_PPC64 && \
++-     (V8_TARGET_LITTLE_ENDIAN || (defined(_CALL_ELF) && _CALL_ELF == 2)))
+++     (defined(_CALL_ELF) && _CALL_ELF == 2))
++ #define ABI_CALL_VIA_IP 1
++ #else
++ #define ABI_CALL_VIA_IP 0
++--- node/deps/v8/src/libsampler/sampler.cc.orig	2025-05-06 12:36:30 UTC
+++++ node/deps/v8/src/libsampler/sampler.cc
++@@ -520,6 +520,10 @@ void SignalHandler::FillRegisterState(void* context, R
++   state->pc = reinterpret_cast<void*>(mcontext.__gregs[_REG_PC]);
++   state->sp = reinterpret_cast<void*>(mcontext.__gregs[_REG_SP]);
++   state->fp = reinterpret_cast<void*>(mcontext.__gregs[_REG_FP]);
+++#elif V8_TARGET_ARCH_PPC64
+++  state->pc = reinterpret_cast<void*>(mcontext.mc_srr0);
+++  state->sp = reinterpret_cast<void*>(mcontext.mc_frame[1]);
+++  state->fp = reinterpret_cast<void*>(mcontext.mc_frame[31]);
++ #endif  // V8_HOST_ARCH_*
++ #elif V8_OS_NETBSD
++ #if V8_HOST_ARCH_IA32
++--- node/deps/v8/include/v8config.h.orig	2025-07-15 17:11:17 UTC
+++++ node/deps/v8/include/v8config.h
++@@ -976,7 +976,7 @@ V8 shared library set USING_V8_SHARED.
++ #define V8_TARGET_LITTLE_ENDIAN 1
++ #endif
++ #elif V8_TARGET_ARCH_PPC64
++-#if V8_OS_AIX
+++#if defined(__BIG_ENDIAN__) || defined(V8_OS_AIX)
++ #define V8_TARGET_BIG_ENDIAN 1
++ #else
++ #define V8_TARGET_LITTLE_ENDIAN 1
++--- node/deps/v8/src/base/platform/platform-posix.cc.orig	2025-07-15 17:11:17 UTC
+++++ node/deps/v8/src/base/platform/platform-posix.cc
++@@ -360,6 +360,9 @@ void* OS::GetRandomMmapAddr() {
++   raw_addr &= uint64_t{0x3FFFF000};
++   // Use extra address space to isolate the mmap regions.
++   raw_addr += uint64_t{0x400000000000};
+++#elif V8_TARGET_BIG_ENDIAN
+++  // Big-endian Linux: 42 bits of virtual addressing.
+++  raw_addr &= uint64_t{0x03FFFFFFF000};
++ #else
++   // Little-endian Linux: 46 bits of virtual addressing.
++   raw_addr &= uint64_t{0x3FFFFFFF0000};
++Obtained from:	https://github.com/nodejs/node/commit/59a522af24173b244cb86829de145d46b143a45c
++
++--- node/src/node_cjs_lexer.cc.orig	2026-02-24 06:13:37 UTC
+++++ node/src/node_cjs_lexer.cc
++@@ -22,8 +22,8 @@ using v8::Value;
++ using v8::Value;
++ 
++ // Create a V8 string from an export_string variant, using fast path for ASCII
++-inline Local<String> CreateString(Isolate* isolate,
++-                                  const lexer::export_string& str) {
+++template <typename T>
+++inline Local<String> CreateString(Isolate* isolate, const T& str) {
++   std::string_view sv = lexer::get_string_view(str);
++ 
++   if (simdutf::validate_ascii(sv.data(), sv.size())) {
++--- node/node.gypi.orig	2025-05-06 12:36:33 UTC
+++++ node/node.gypi
++@@ -376,6 +376,9 @@
++     [ 'node_use_openssl=="true"', {
++       'defines': [ 'HAVE_OPENSSL=1' ],
++       'conditions': [
+++        ['openssl_no_asm==1', {
+++          'defines': [ 'OPENSSL_NO_ASM' ],
+++        }],
++         [ 'node_shared_openssl=="false"', {
++           'defines': [ 'OPENSSL_API_COMPAT=0x10100000L', ],
++           'dependencies': [
++--- node/src/cares_wrap.h.orig	2023-05-16 06:58:21 UTC
+++++ node/src/cares_wrap.h
++@@ -23,7 +23,7 @@
++ # include <netdb.h>
++ #endif  // __POSIX__
++ 
++-# include <ares_nameser.h>
+++# include <arpa/nameser.h>
++ 
++ namespace node {
++ namespace cares_wrap {
