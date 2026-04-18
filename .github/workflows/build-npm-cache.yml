@@ -1,26 +1,26 @@
 # .github/workflows/build-npm-cache.yml
 #
-# TWO-PHASE CACHE BUILD - ZERO PACKUMENTS STRATEGY
+# TWO-PHASE CACHE BUILD - MINIAML PACKUMENTS STRATEGY
 #
 # Phase 1: Generate/update shrinkwraps (temporary cache, then deleted)
 # Phase 2: Rebuild cache using updated shrinkwraps (tarballs only)
 #
 # KEY: Match NODE_ENV and flags used by actual build scripts
-# KEY: Use THREE flags in Phase 2 to prevent ALL packument fetching:
+# KEY: Use THREE flags in Phase 2 to prevent MOST packument fetching:
 #      --legacy-peer-deps (skip peer dependency resolution)
 #      --no-audit (skip vulnerability audits)
 #      --no-fund (skip funding info checks)
 # KEY: Building on Linux for FreeBSD requires --os freebsd flag
 # KEY: Building on x64 for FreeBSD requires --cpu x64 flag (except aarch64)
 #
-# Shrinkwrap files (13 dirs - tarballs only, ZERO packuments):
+# Shrinkwrap files (13 dirs - tarballs only, minimal packuments):
 #   Production mode: 8 directories
 #   Full mode: 5 directories (including 2 arch-specific yao-pkg)
 #
-# Expected cache size: ~157MB (tarballs only)
-# Packument overhead: 0%
+# Expected cache size: ~189MB (tarballs only)
+# Packument overhead: 11%
 
-name: Build npm Cache (Zero Packuments)
+name: Build npm Cache (Minimal Packuments)
 
 on:
   workflow_dispatch:  # Manual trigger only
@@ -33,27 +33,27 @@ on:
          description: 'DS_BUILD number (e.g. 177)'
          required: true
          default: '8'
-       node_version:
-         description: 'PKGFETCH_NODE_VERSION (e.g. 20.19.5)'
+       node_major:
+         description: 'Node.js major version (e.g. 20) — minor/patch resolved automatically'
          required: true
-         default: '20.20.2'
-       yao_pkg_ver:
-         description: '@yao-pkg/pkg version (e.g. 6.9.0)'
-         required: true
-         default: '6.14.2'
+         default: '20'
        npm_version:
          description: 'npm version used in the jail (must match www/npm-node20 exactly)'
          required: true
          default: '11.12.1'
+       yao_pkg_ver:
+         description: '@yao-pkg/pkg version (e.g. 6.14.2) — @yao-pkg/pkg-fetch resolved from this'
+         required: true
+         default: '6.14.2'
   push:
     tags:
       - "v*"
 
 env:
   DS_TAG:      "v${{ github.event.inputs.ds_version }}.${{ github.event.inputs.ds_build }}"
-  NODE_VER:    "${{ github.event.inputs.node_version }}"
-  YAO_PKG_VER: "${{ github.event.inputs.yao_pkg_ver }}"
+  NODE_MAJOR:  "${{ github.event.inputs.node_major }}"
   NPM_VER:     "${{ github.event.inputs.npm_version }}"
+  YAO_PKG_VER: "${{ github.event.inputs.yao_pkg_ver }}"
   NPM_CACHE:   "${{ github.workspace }}/npm-cache"
   TEMP_CACHE:  "${{ github.workspace }}/temp-cache"
 
@@ -66,23 +66,77 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Install Node.js
+      # Step 1: Bootstrap with any Node in the requested major so we have npm available
+      # to fetch @yao-pkg/pkg and inspect its bundled pkg-fetch patches.
+      - name: Bootstrap Node.js ${{ github.event.inputs.node_major }}.x (version resolution only)
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VER }}
+          node-version: ${{ env.NODE_MAJOR }}.x
 
-      # Install the exact npm version that www/npm-node20 provides in the jail.
-      - name: Install npm@${{ github.event.inputs.npm_version }} to match jail
+      # Step 2: Install @yao-pkg/pkg into a temp dir. pkg-fetch is a real dependency
+      # so npm installs it alongside pkg. We then read its patches/ directory directly
+      # — the patch filenames (node.vX.Y.Z.cpp.patch) are the authoritative list of
+      # supported exact Node versions. No registry queries, no JSON parsing needed.
+      - name: Resolve exact Node and pkg-fetch versions from @yao-pkg/pkg
+        id: meta
+        run: |
+          mkdir -p /tmp/ver-probe
+          npm install --prefix /tmp/ver-probe --ignore-scripts \
+            "@yao-pkg/pkg@${YAO_PKG_VER}"
+
+          # Derive exact Node version from pkg-fetch patch filenames, filtered to requested major
+          NODE_VER=$(ls /tmp/ver-probe/node_modules/@yao-pkg/pkg-fetch/patches/ \
+            | grep -oP 'node\.v\K[0-9]+\.[0-9]+\.[0-9]+' \
+            | grep "^${NODE_MAJOR}\." \
+            | sort -V | tail -1)
+
+          # Read pkg-fetch version directly from pkg's package.json (already on disk)
+          PKG_FETCH_VER=$(node -e "
+            const p = require('/tmp/ver-probe/node_modules/@yao-pkg/pkg/package.json');
+            console.log(p.dependencies['@yao-pkg/pkg-fetch'].replace(/^[\\^~]/,''));
+          ")
+
+          rm -rf /tmp/ver-probe
+
+          if [ -z "${NODE_VER}" ]; then
+            echo "ERROR: No pkg-fetch patch found for Node major ${NODE_MAJOR}"
+            echo "  Check available patches in @yao-pkg/pkg-fetch@${PKG_FETCH_VER}/patches/"
+            exit 1
+          fi
+
+          # NODE_VER: output for setup-node with: field; env for all run: steps
+          echo "node=${NODE_VER}"            >> $GITHUB_OUTPUT
+          echo "NODE_VER=${NODE_VER}"         >> $GITHUB_ENV
+          # PKG_FETCH_VER: only used in run: steps, env is sufficient
+          echo "PKG_FETCH_VER=${PKG_FETCH_VER}" >> $GITHUB_ENV
+
+          echo "Resolved versions:"
+          echo "  Node:               ${NODE_VER}  (from pkg-fetch patch filenames)"
+          echo "  npm (jail/input):   ${NPM_VER}"
+          echo "  @yao-pkg/pkg:       ${YAO_PKG_VER}"
+          echo "  @yao-pkg/pkg-fetch: ${PKG_FETCH_VER}  (from pkg's package.json)"
+
+      # Step 3: Re-run setup-node with the exact patch version derived above.
+      # actions/setup-node overwrites PATH cleanly each time it runs.
+      - name: Install Node.js ${{ steps.meta.outputs.node }} (exact version for pkg-fetch)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.meta.outputs.node }}
+
+      # Step 4: Shadow the runner's npm with the jail-matched version.
+      # The Ubuntu runner ships a different npm major; the global-prefix workaround
+      # ensures every subsequent step uses the version that matches www/npm-nodeXX.
+      - name: Install npm@${{ env.NPM_VER }} to match jail
         run: |
           mkdir -p ~/.npm-global
           npm config set prefix ~/.npm-global
           echo "$HOME/.npm-global/bin" >> $GITHUB_PATH
-          npm install -g "npm@${{ env.NPM_VER }}"
+          npm install -g "npm@${NPM_VER}"
 
-      - name: Verify npm version
+      - name: Verify Node and npm versions
         run: |
-          node --version
-          npm --version
+          echo "Node: $(node --version)"
+          echo "npm:  $(npm --version)"
 
       - name: Checkout cache repository
         uses: actions/checkout@v4
@@ -93,17 +147,11 @@ jobs:
       - name: Clone source repositories
         run: |
           echo "Building cache for DS_TAG=${DS_TAG}"
-          git clone --depth 1 --branch "${DS_TAG}" --single-branch \
-            https://github.com/ONLYOFFICE/web-apps.git src/web-apps
-          git clone --depth 1 --branch "${DS_TAG}" --single-branch \
-            https://github.com/ONLYOFFICE/server.git src/server
-          git clone --depth 1 --branch "${DS_TAG}" --single-branch \
-            https://github.com/ONLYOFFICE/sdkjs.git src/sdkjs
-          git clone --depth 1 --branch "${DS_TAG}" --single-branch \
-            https://github.com/ONLYOFFICE/document-server-integration.git src/document-server-integration
-          git clone --depth 1 --branch "${DS_TAG}" --single-branch \
-            https://github.com/ONLYOFFICE/document-server-package.git src/document-server-package
-          
+          for repo in web-apps server sdkjs document-server-integration document-server-package; do
+            git clone --depth 1 --branch "${DS_TAG}" --single-branch \
+              "https://github.com/ONLYOFFICE/${repo}.git" "src/${repo}"
+          done
+
           echo "=== web-apps    ===" && git -C src/web-apps describe --tags
           echo "=== server      ===" && git -C src/server describe --tags
           echo "=== sdkjs       ===" && git -C src/sdkjs describe --tags
@@ -120,7 +168,7 @@ jobs:
         run: |
           echo "--- Creating patches for version ${DS_VERSION} ---"
           mkdir -p patches
-          
+
           # server/package.json patch
           cat > patches/patch-server_package.json << 'PATCH_EOF'
           --- server/package.json.orig	2026-02-23 07:24:11 UTC
@@ -139,7 +187,7 @@ jobs:
              "devDependencies": {
                "@eslint/compat": "1.2.3",
           PATCH_EOF
-          
+
           # server/DocService patch
           cat > patches/patch-server_DocService_package.json << 'PATCH_EOF'
           --- server/DocService/package.json.orig	2026-02-23 07:24:11 UTC
@@ -155,7 +203,7 @@ jobs:
                "multiparty": "4.2.3",
                "mysql2": "3.13.0",
           PATCH_EOF
-          
+
           # web-apps/build patch
           cat > patches/patch-web-apps_build_package.json << 'PATCH_EOF'
           --- web-apps/build/package.json.orig	2026-02-23 07:24:11 UTC
@@ -193,38 +241,28 @@ jobs:
           echo "PHASE 1: GENERATE/UPDATE SHRINKWRAPS"
           echo "========================================"
           mkdir -p "${TEMP_CACHE}"
-          
+
           echo "GROUP A: Production mode installations"
-          
+
           # 1. sdkjs/build
           echo "1. sdkjs/build (production mode)..."
           NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --prefix src/sdkjs/build
           cd src/sdkjs/build && npm shrinkwrap --lockfile-version 3 && cd -
-          
+
           # 2. framework7-react
           echo "2. framework7-react (production mode + --include=dev)..."
           NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --include=dev --prefix src/web-apps/vendor/framework7-react
           cd src/web-apps/vendor/framework7-react && npm shrinkwrap --dev --lockfile-version 3 && cd -
-          
-          # 3. server/Metrics
-          echo "3. server/Metrics (production mode)..."
-          NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --prefix src/server/Metrics
-          cd src/server/Metrics && npm shrinkwrap --lockfile-version 3 && cd -
-          
-          # 4. server/FileConverter
-          echo "4. server/FileConverter (production mode)..."
-          NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --prefix src/server/FileConverter
-          cd src/server/FileConverter && npm shrinkwrap --lockfile-version 3 && cd -
-          
-          # 5. server/Common
-          echo "5. server/Common (production mode)..."
-          NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --prefix src/server/Common
-          cd src/server/Common && npm shrinkwrap --lockfile-version 3 && cd -
+
+          # 3-5. server/Metrics, server/FileConverter, server/Common (identical flags)
+          for subdir in Metrics FileConverter Common; do
+            echo "$(( $(echo "Metrics FileConverter Common" | tr ' ' '\n' | grep -n "^${subdir}$" | cut -d: -f1) + 2 )). server/${subdir} (production mode)..."
+            NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
+              --lockfile-version 3 --ignore-scripts --prefix "src/server/${subdir}"
+            cd "src/server/${subdir}" && npm shrinkwrap --lockfile-version 3 && cd -
+          done
 
       - name: Phase 1 - Production mode installations (6-8)
         run: |
@@ -235,7 +273,7 @@ jobs:
           NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --prefix src/server
           cd src/server && npm shrinkwrap --lockfile-version 3 && cd -
-          
+
           # 7. server/DocService
           echo "7. server/DocService (production mode, patched)..."
           rm -f src/server/DocService/npm-shrinkwrap.json
@@ -243,7 +281,7 @@ jobs:
           NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --prefix src/server/DocService
           cd src/server/DocService && npm shrinkwrap --lockfile-version 3 && cd -
-          
+
           # 8. document-server-integration
           echo "8. document-server-integration (production mode, --omit=dev)..."
           NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
@@ -255,7 +293,7 @@ jobs:
       - name: Phase 1 - Full mode installations (9-11)
         run: |
           echo "GROUP B: Full mode installations"
-          
+
           # 9. sdkjs
           echo "9. sdkjs (full mode, created package.json)..."
           cat > src/sdkjs/package.json << 'EOF'
@@ -272,14 +310,14 @@ jobs:
           npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --prefix src/sdkjs
           cd src/sdkjs && npm shrinkwrap --lockfile-version 3 && cd -
-          
+
           # 10. web-apps/build
           echo "10. web-apps/build (full mode, patched)..."
           patch -p0 -d src < patches/patch-web-apps_build_package.json
           npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --prefix src/web-apps/build
           cd src/web-apps/build && npm shrinkwrap --lockfile-version 3 && cd -
-          
+
           # 11. document-server-package/home/npm
           echo "11. document-server-package/home/npm (full mode)..."
           npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
@@ -290,9 +328,8 @@ jobs:
 
       - name: Phase 1 - yao-pkg installations (12a-12b)
         run: |
-          # 12a. yao-pkg-arm64
-          echo "12a. yao-pkg-arm64 (full mode, arm64)..."
-          mkdir -p src/yao-pkg-arm64
+          # Shared seed package.json for both arch dirs
+          mkdir -p src/yao-pkg-arm64 src/yao-pkg-x64
           cat > src/yao-pkg-arm64/package.json << 'EOF'
           {
             "name": "yao-pkg-seed",
@@ -301,20 +338,16 @@ jobs:
             "dependencies": {}
           }
           EOF
-          npm install --os freebsd --cpu arm64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --prefix src/yao-pkg-arm64 \
-            "@yao-pkg/pkg@${YAO_PKG_VER}"
-          cd src/yao-pkg-arm64 && npm shrinkwrap --lockfile-version 3 && cd -
-          
-          # 12b. yao-pkg-x64
-          echo "12b. yao-pkg-x64 (full mode, x64)..."
-          mkdir -p src/yao-pkg-x64
           cp src/yao-pkg-arm64/package.json src/yao-pkg-x64/package.json
-          npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --prefix src/yao-pkg-x64 \
-            "@yao-pkg/pkg@${YAO_PKG_VER}"
-          cd src/yao-pkg-x64 && npm shrinkwrap --lockfile-version 3 && cd -
-          
+
+          for arch in arm64 x64; do
+            echo "12$([ "$arch" = arm64 ] && echo a || echo b). yao-pkg-${arch} (full mode, ${arch})..."
+            npm install --os freebsd --cpu "${arch}" --cache "${TEMP_CACHE}" \
+              --lockfile-version 3 --ignore-scripts --prefix "src/yao-pkg-${arch}" \
+              "@yao-pkg/pkg@${YAO_PKG_VER}"
+            cd "src/yao-pkg-${arch}" && npm shrinkwrap --lockfile-version 3 && cd -
+          done
+
           echo "Phase 1 complete: All 13 shrinkwraps generated"
           du -sh "${TEMP_CACHE}"
 
@@ -328,54 +361,40 @@ jobs:
           echo "========================================"
           rm -rf "${TEMP_CACHE}"
           mkdir -p "${NPM_CACHE}"
-          
+
           echo "Production mode installations:"
-          
+
           # 1. sdkjs/build
           rm -rf src/sdkjs/build/node_modules
           NODE_ENV=production npm install --os freebsd --cpu x64 \
             --legacy-peer-deps --no-audit --no-fund \
             --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs/build
-          
+
           # 2. framework7-react
           rm -rf src/web-apps/vendor/framework7-react/node_modules
           NODE_ENV=production npm install --os freebsd --cpu x64 \
             --legacy-peer-deps --no-audit --no-fund \
             --cache "${NPM_CACHE}" --ignore-scripts --include=dev \
             --prefix src/web-apps/vendor/framework7-react
-          
-          # 3. server/Metrics
-          rm -rf src/server/Metrics/node_modules
-          NODE_ENV=production npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Metrics
-          
-          # 4. server/FileConverter
-          rm -rf src/server/FileConverter/node_modules
-          NODE_ENV=production npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/FileConverter
-          
-          # 5. server/Common
-          rm -rf src/server/Common/node_modules
-          NODE_ENV=production npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/Common
+
+          # 3-5. server/Metrics, server/FileConverter, server/Common (identical flags)
+          for subdir in Metrics FileConverter Common; do
+            rm -rf "src/server/${subdir}/node_modules"
+            NODE_ENV=production npm install --os freebsd --cpu x64 \
+              --legacy-peer-deps --no-audit --no-fund \
+              --cache "${NPM_CACHE}" --ignore-scripts --prefix "src/server/${subdir}"
+          done
 
       - name: Phase 2 - Production mode (6-8)
         run: |
-          # 6. server
-          rm -rf src/server/node_modules
-          NODE_ENV=production npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server
-          
-          # 7. server/DocService
-          rm -rf src/server/DocService/node_modules
-          NODE_ENV=production npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --prefix src/server/DocService
-          
+          # 6-7. server and server/DocService (identical flags)
+          for subdir in '' /DocService; do
+            rm -rf "src/server${subdir}/node_modules"
+            NODE_ENV=production npm install --os freebsd --cpu x64 \
+              --legacy-peer-deps --no-audit --no-fund \
+              --cache "${NPM_CACHE}" --ignore-scripts --prefix "src/server${subdir}"
+          done
+
           # 8. document-server-integration
           rm -rf src/document-server-integration/web/documentserver-example/nodejs/node_modules
           NODE_ENV=production npm install --os freebsd --cpu x64 \
@@ -386,38 +405,24 @@ jobs:
       - name: Phase 2 - Full mode (9-13)
         run: |
           echo "Full mode installations:"
-          
-          # 9. sdkjs
-          rm -rf src/sdkjs/node_modules
-          npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs
-          
-          # 10. web-apps/build
-          rm -rf src/web-apps/build/node_modules
-          npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --prefix src/web-apps/build
-          
-          # 11. document-server-package
-          rm -rf src/document-server-package/common/documentserver/home/npm/node_modules
-          npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts \
-            --prefix src/document-server-package/common/documentserver/home/npm
-          
-          # 12a. yao-pkg-arm64
-          rm -rf src/yao-pkg-arm64/node_modules
-          npm install --os freebsd --cpu arm64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --prefix src/yao-pkg-arm64
-          
-          # 12b. yao-pkg-x64
-          rm -rf src/yao-pkg-x64/node_modules
-          npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --prefix src/yao-pkg-x64
-          
+
+          # 9-11. sdkjs, web-apps/build, document-server-package (identical flags, x64)
+          for prefix in src/sdkjs src/web-apps/build \
+                        src/document-server-package/common/documentserver/home/npm; do
+            rm -rf "${prefix}/node_modules"
+            npm install --os freebsd --cpu x64 \
+              --legacy-peer-deps --no-audit --no-fund \
+              --cache "${NPM_CACHE}" --ignore-scripts --prefix "${prefix}"
+          done
+
+          # 12a-12b. yao-pkg (arch-specific)
+          for arch in arm64 x64; do
+            rm -rf "src/yao-pkg-${arch}/node_modules"
+            npm install --os freebsd --cpu "${arch}" \
+              --legacy-peer-deps --no-audit --no-fund \
+              --cache "${NPM_CACHE}" --ignore-scripts --prefix "src/yao-pkg-${arch}"
+          done
+
           echo "Phase 2 complete: 13 directories cached"
           du -sh "${NPM_CACHE}/_cacache"
 
@@ -430,54 +435,46 @@ jobs:
       - name: Capture artifacts
         run: |
           echo "--- Capturing artifacts ---"
-          mkdir -p src/shrinkwrap
-          
-          # Create directory structure
-          mkdir -p src/shrinkwrap/sdkjs/build
-          mkdir -p src/shrinkwrap/web-apps/vendor/framework7-react
-          mkdir -p src/shrinkwrap/web-apps/build
-          mkdir -p src/shrinkwrap/server
-          mkdir -p src/shrinkwrap/server/Metrics
-          mkdir -p src/shrinkwrap/server/FileConverter
-          mkdir -p src/shrinkwrap/server/Common
-          mkdir -p src/shrinkwrap/server/DocService
-          mkdir -p src/shrinkwrap/sdkjs
-          mkdir -p src/shrinkwrap/document-server-package/common/documentserver/home/npm
-          mkdir -p src/shrinkwrap/document-server-integration/web/documentserver-example/nodejs
-          
-          # Copy all 13 shrinkwraps
+
+          # Create all shrinkwrap destination directories in one call
+          mkdir -p \
+            src/shrinkwrap/sdkjs/build \
+            src/shrinkwrap/web-apps/vendor/framework7-react \
+            src/shrinkwrap/web-apps/build \
+            src/shrinkwrap/server/Metrics \
+            src/shrinkwrap/server/FileConverter \
+            src/shrinkwrap/server/Common \
+            src/shrinkwrap/server/DocService \
+            src/shrinkwrap/sdkjs \
+            src/shrinkwrap/document-server-package/common/documentserver/home/npm \
+            src/shrinkwrap/document-server-integration/web/documentserver-example/nodejs
+
+          # Copy all 11 standard shrinkwraps (mirrors the mkdir -p list above)
           echo "Copying shrinkwrap files..."
-          cp src/sdkjs/build/npm-shrinkwrap.json \
-            src/shrinkwrap/sdkjs/build/
-          cp src/web-apps/vendor/framework7-react/npm-shrinkwrap.json \
-            src/shrinkwrap/web-apps/vendor/framework7-react/
-          cp src/server/Metrics/npm-shrinkwrap.json \
-            src/shrinkwrap/server/Metrics/
-          cp src/server/FileConverter/npm-shrinkwrap.json \
-            src/shrinkwrap/server/FileConverter/
-          cp src/server/Common/npm-shrinkwrap.json \
-            src/shrinkwrap/server/Common/
-          cp src/server/npm-shrinkwrap.json \
-            src/shrinkwrap/server/
-          cp src/server/DocService/npm-shrinkwrap.json \
-            src/shrinkwrap/server/DocService/
-          cp src/document-server-integration/web/documentserver-example/nodejs/npm-shrinkwrap.json \
-            src/shrinkwrap/document-server-integration/web/documentserver-example/nodejs/
-          cp src/sdkjs/npm-shrinkwrap.json \
-            src/shrinkwrap/sdkjs/
-          cp src/web-apps/build/npm-shrinkwrap.json \
-            src/shrinkwrap/web-apps/build/
-          cp src/document-server-package/common/documentserver/home/npm/npm-shrinkwrap.json \
-            src/shrinkwrap/document-server-package/common/documentserver/home/npm/
-          
-          # Copy yao-pkg files
+          for rel_path in \
+            sdkjs/build \
+            web-apps/vendor/framework7-react \
+            server/Metrics \
+            server/FileConverter \
+            server/Common \
+            server \
+            server/DocService \
+            sdkjs \
+            web-apps/build \
+            document-server-package/common/documentserver/home/npm \
+            document-server-integration/web/documentserver-example/nodejs
+          do
+            cp "src/${rel_path}/npm-shrinkwrap.json" "src/shrinkwrap/${rel_path}/"
+          done
+
+          # Copy yao-pkg arch-specific files
           cp src/yao-pkg-arm64/npm-shrinkwrap.json yao-pkg-npm-shrinkwrap-aarch64.json
-          cp src/yao-pkg-x64/npm-shrinkwrap.json yao-pkg-npm-shrinkwrap-amd64.json
-          cp src/yao-pkg-arm64/package.json yao-pkg-package.json
-          
+          cp src/yao-pkg-x64/npm-shrinkwrap.json   yao-pkg-npm-shrinkwrap-amd64.json
+          cp src/yao-pkg-arm64/package.json         yao-pkg-package.json
+
           # Copy created package.json
           cp src/sdkjs/package.json sdkjs-package.json
-          
+
           echo "All 13 shrinkwraps captured"
 
       - name: Generate pkg-fetch patch
@@ -486,26 +483,23 @@ jobs:
           rm -rf "${GITHUB_WORKSPACE}/*.cpp.patch"
           mkdir -p "${{ github.workspace }}/patch-workspace"
           cd "${{ github.workspace }}/patch-workspace"
-          
+
           npm install --cache "${NPM_CACHE}" patch-package
           npm install --cache "${NPM_CACHE}" "@yao-pkg/pkg@${YAO_PKG_VER}"
-          
-          PKG_FETCH_VERSION=$(grep '"@yao-pkg/pkg-fetch"' node_modules/@yao-pkg/pkg/package.json | \
-            cut -d'"' -f4 | sed 's/\^//')
-          echo "pkg-fetch version: ${PKG_FETCH_VERSION}"
-          
-          NODE_MAJOR=$(echo "${NODE_VER}" | cut -d'.' -f1)
-          echo "Node major: ${NODE_MAJOR}"
-          
+
+          PKG_FETCH_VERSION="${PKG_FETCH_VER}"
+          NODE_VER="${NODE_VER}"
+          echo "Node: ${NODE_VER} (major: ${NODE_MAJOR}), pkg-fetch: ${PKG_FETCH_VERSION}"
+
           mkdir -p freebsd-patches
           NODE_PORT_DIR="${{ github.workspace }}/freebsd-ports/www/node${NODE_MAJOR}/files"
-          
+
           if [ -d "${NODE_PORT_DIR}" ]; then
             cp ${NODE_PORT_DIR}/patch-* freebsd-patches/ 2>/dev/null || true
             patch_count=$(ls -1 freebsd-patches/patch-* 2>/dev/null | wc -l)
             echo "Copied ${patch_count} FreeBSD patches"
           fi
-          
+
           cd node_modules/@yao-pkg/pkg-fetch/patches
           for patch_file in "${{ github.workspace }}"/patch-workspace/freebsd-patches/patch-*; do
             if [ -f "${patch_file}" ]; then
@@ -513,14 +507,14 @@ jobs:
                 "node.v${NODE_VER}.cpp.patch"
             fi
           done
-          
+
           cd "${{ github.workspace }}/patch-workspace"
           npx patch-package "@yao-pkg/pkg-fetch"
-          
+
           cd patches
           PATCH_FILE=$(ls @yao-pkg+pkg-fetch+*.patch 2>/dev/null | head -1)
           UPSTREAM_URL="https://github.com/yao-pkg/pkg-fetch/raw/refs/tags/v${PKG_FETCH_VERSION}/patches/node.v${NODE_VER}.cpp.patch"
-          
+
           {
             echo "${UPSTREAM_URL}"
             echo "+ local FreeBSD patches"
@@ -531,15 +525,19 @@ jobs:
       - name: Smoke test
         run: |
           echo "--- Smoke-testing cache offline ---"
-          
+
           success=0
           failed=0
-          
-          # Test production mode dirs
-          PROD_DIRS="src/sdkjs/build src/server/Metrics src/server/FileConverter \
-                     src/server/Common src/server src/server/DocService"
-          
-          for npm_dir in ${PROD_DIRS}; do
+
+          # 1-6: Production mode dirs (identical flags)
+          for npm_dir in \
+            src/sdkjs/build \
+            src/server/Metrics \
+            src/server/FileConverter \
+            src/server/Common \
+            src/server \
+            src/server/DocService
+          do
             rm -rf "${npm_dir}/node_modules"
             if NODE_ENV=production npm install --os freebsd --cpu x64 --offline \
                 --legacy-peer-deps --no-audit --no-fund \
@@ -550,8 +548,8 @@ jobs:
               failed=$((failed + 1))
             fi
           done
-          
-          # Test framework7-react
+
+          # 7. framework7-react (needs --include=dev)
           rm -rf src/web-apps/vendor/framework7-react/node_modules
           if NODE_ENV=production npm install --os freebsd --cpu x64 --offline \
               --legacy-peer-deps --no-audit --no-fund --cache "${NPM_CACHE}" \
@@ -562,8 +560,8 @@ jobs:
             echo "✗ FAILED: framework7-react"
             failed=$((failed + 1))
           fi
-          
-          # Test integration
+
+          # 8. document-server-integration (needs --omit=dev)
           rm -rf src/document-server-integration/web/documentserver-example/nodejs/node_modules
           if NODE_ENV=production npm install --os freebsd --cpu x64 --offline \
               --legacy-peer-deps --no-audit --no-fund --cache "${NPM_CACHE}" \
@@ -574,11 +572,13 @@ jobs:
             echo "✗ FAILED: document-server-integration"
             failed=$((failed + 1))
           fi
-          
-          # Test full mode dirs
-          FULL_DIRS="src/sdkjs src/web-apps/build src/document-server-package/common/documentserver/home/npm"
-          
-          for npm_dir in ${FULL_DIRS}; do
+
+          # 9-11: Full mode dirs, x64 (identical flags)
+          for npm_dir in \
+            src/sdkjs \
+            src/web-apps/build \
+            src/document-server-package/common/documentserver/home/npm
+          do
             rm -rf "${npm_dir}/node_modules"
             if npm install --os freebsd --cpu x64 --offline \
                 --legacy-peer-deps --no-audit --no-fund \
@@ -589,33 +589,24 @@ jobs:
               failed=$((failed + 1))
             fi
           done
-          
-          # Test yao-pkg dirs
-          rm -rf src/yao-pkg-arm64/node_modules
-          if npm install --os freebsd --cpu arm64 --offline \
-              --legacy-peer-deps --no-audit --no-fund \
-              --cache "${NPM_CACHE}" --ignore-scripts \
-              --prefix src/yao-pkg-arm64 >/dev/null 2>&1; then
-            success=$((success + 1))
-          else
-            echo "✗ FAILED: yao-pkg-arm64"
-            failed=$((failed + 1))
-          fi
-          
-          rm -rf src/yao-pkg-x64/node_modules
-          if npm install --os freebsd --cpu x64 --offline \
-              --legacy-peer-deps --no-audit --no-fund \
-              --cache "${NPM_CACHE}" --ignore-scripts \
-              --prefix src/yao-pkg-x64 >/dev/null 2>&1; then
-            success=$((success + 1))
-          else
-            echo "✗ FAILED: yao-pkg-x64"
-            failed=$((failed + 1))
-          fi
-          
+
+          # 12a-12b: yao-pkg (arch-specific)
+          for arch in arm64 x64; do
+            rm -rf "src/yao-pkg-${arch}/node_modules"
+            if npm install --os freebsd --cpu "${arch}" --offline \
+                --legacy-peer-deps --no-audit --no-fund \
+                --cache "${NPM_CACHE}" --ignore-scripts \
+                --prefix "src/yao-pkg-${arch}" >/dev/null 2>&1; then
+              success=$((success + 1))
+            else
+              echo "✗ FAILED: yao-pkg-${arch}"
+              failed=$((failed + 1))
+            fi
+          done
+
           echo ""
           echo "Smoke test results: ${success} passed, ${failed} failed"
-          
+
           if [ ${failed} -gt 0 ]; then
             exit 1
           fi
@@ -625,22 +616,22 @@ jobs:
           echo "========================================"
           echo "FINAL CACHE STATISTICS"
           echo "========================================"
-          
+
           file_count=$(find "${NPM_CACHE}/_cacache" -type f | wc -l)
           echo "Total cached files: ${file_count}"
-          
+
           cache_size=$(du -sh "${NPM_CACHE}/_cacache" | awk '{print $1}')
           echo "Total cache size: ${cache_size}"
-          
+
           tarball_size=$(du -sh "${NPM_CACHE}/_cacache/content-v2" | awk '{print $1}')
           echo "Tarballs: ${tarball_size}"
-          
+
           packument_size=$(du -sh "${NPM_CACHE}/_cacache/index-v5" | awk '{print $1}')
           echo "Packuments: ${packument_size}"
-          
+
           shrinkwrap_count=$(find src/shrinkwrap -name npm-shrinkwrap.json | wc -l)
           echo "Shrinkwrap files: ${shrinkwrap_count} + 2 yao-pkg = 13 total"
-          
+
           echo ""
           echo "Strategy: Zero-packument with 13 shrinkwraps"
           echo "Flags used: --legacy-peer-deps --no-audit --no-fund"
@@ -680,6 +671,14 @@ jobs:
           cp -a shrinkwrap "$DIR_NAME"/
           cp -a yao-pkg-npm-shrinkwrap-*.json "$DIR_NAME"/
           cp -a yao-pkg-package.json "$DIR_NAME"/
+
+          # Write build manifest (tarball-only, not committed to the repo)
+          cat > "$DIR_NAME/build-info.txt" << EOF
+Node:               ${{ env.NODE_VER }}
+npm:                ${{ env.NPM_VER }}
+@yao-pkg/pkg:       ${{ env.YAO_PKG_VER }}
+@yao-pkg/pkg-fetch: ${{ env.PKG_FETCH_VER }}
+EOF
 
           # Create tarball with stable ordering (important for distinfo)
           tar --sort=name \
@@ -725,4 +724,10 @@ jobs:
           gh release create "${{ steps.vars.outputs.release_tag }}" \
             "$TAR_NAME" \
             --title "NPM Cache ${{ steps.vars.outputs.release_tag }}" \
-            --notes "Offline npm cache for OnlyOffice DocumentServer"
+            --notes "Offline npm cache for OnlyOffice DocumentServer
+
+          ## Build Metadata
+          - Node:               ${{ env.NODE_VER }}
+          - npm:                ${{ env.NPM_VER }}
+          - @yao-pkg/pkg:       ${{ env.YAO_PKG_VER }}
+          - @yao-pkg/pkg-fetch: ${{ env.PKG_FETCH_VER }}"
