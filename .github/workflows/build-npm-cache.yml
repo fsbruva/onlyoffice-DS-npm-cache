@@ -36,7 +36,7 @@ on:
        node_major:
          description: 'Node.js major version (e.g. 20) — minor/patch resolved automatically'
          required: true
-         default: '20'
+         default: '24'
        npm_version:
          description: 'npm version used in the jail (must match www/npm-node20 exactly)'
          required: true
@@ -44,7 +44,7 @@ on:
        yao_pkg_ver:
          description: '@yao-pkg/pkg version (e.g. 6.14.2) — @yao-pkg/pkg-fetch resolved from this'
          required: true
-         default: '6.14.2'
+         default: '6.17.0'
   push:
     tags:
       - "v*"
@@ -80,8 +80,8 @@ jobs:
       - name: Resolve exact Node and pkg-fetch versions from @yao-pkg/pkg
         id: meta
         run: |
-          mkdir -p /tmp/ver-probe
-          npm install --prefix /tmp/ver-probe --ignore-scripts \
+          mkdir -p /tmp/ver-probe/ver-cache
+          npm install --prefix /tmp/ver-probe --cache /tmp/ver-probe/ver-cache --ignore-scripts \
             "@yao-pkg/pkg@${YAO_PKG_VER}"
 
           # Derive exact Node version from pkg-fetch patch filenames, filtered to requested major
@@ -633,7 +633,7 @@ jobs:
           echo "Shrinkwrap files: ${shrinkwrap_count} + 2 yao-pkg = 13 total"
 
           echo ""
-          echo "Strategy: Zero-packument with 13 shrinkwraps"
+          echo "Strategy: Minimal-packument with 13 shrinkwraps"
           echo "Flags used: --legacy-peer-deps --no-audit --no-fund"
           echo "Platform flags: --os freebsd --cpu x64 (or arm64)"
 
@@ -650,7 +650,7 @@ jobs:
       - name: Prep for release
         run: |
           rm -rf "${NPM_CACHE}/_logs" "${NPM_CACHE}/_update-notifier-last-checked"
-           cp -r src/shrinkwrap shrinkwrap
+          cp -r src/shrinkwrap shrinkwrap
 
       # ----------------------------
       # Create tarball INCLUDING _cacache

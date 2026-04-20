@@ -26,8 +26,8 @@ This repository solves that with a **minimal-packument** strategy:
    exact versions, eliminating all resolution queries at install time.
 2. **Phase 2** — discards the temporary cache and rebuilds it from scratch using
    the shrinkwraps, plus three flags that suppress every remaining network probe:
-   `--legacy-peer-deps`, `--no-audit`, `--no-fund`. Only tarballs land in the
-   final cache — no packuments.
+   `--legacy-peer-deps`, `--no-audit`, `--no-fund`. Mostly tarballs land in the
+   final cache, with minimal packuments.
 
 The result is a ~118 MB cache that satisfies every `npm install` in the
 DocumentServer build with `--offline`, on FreeBSD, for both `amd64` and
@@ -109,7 +109,7 @@ will compile against is always the one it has a patch for.
 
 ## Triggering the workflow
 
-Go to **Actions → Build npm Cache (Zero Packuments) → Run workflow** and fill in
+Go to **Actions → Build npm Cache (Minimal Packuments) → Run workflow** and fill in
 the five inputs:
 
 | Input | Description | Example |
@@ -170,10 +170,10 @@ The tarball is created with `--sort=name`, `--mtime='UTC 2020-01-01'`,
 
 ## Using the cache in a Poudriere build
 
-Specify the _PKGFETCH_NODE_VERSION and NPM_CACHE_TAG variables
+Specify the _PKGFETCH_NODE_VERSION and _NPM_CACHE_TAG variables
 in the FreeBSD www/onlyoffice-documentserver Makefile.
 
-Ensure the version of npm-node that is specified matches, as well.
+Ensure the version of www/npm-node within LIB_DEPENDS matches, as well.
 
 ---
 
