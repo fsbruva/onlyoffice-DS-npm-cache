@@ -14,7 +14,7 @@
 # KEY: Building on x64 for FreeBSD requires --cpu x64 flag (except aarch64)
 #
 # Shrinkwrap files (13 dirs - tarballs only, minimal packuments):
-#   Production mode: 8 directories
+#   Production mode: 8 directories (Metrics, DocService patched)
 #   Full mode: 5 directories (including 2 arch-specific yao-pkg)
 #
 # Expected cache size: ~189MB (tarballs only)
@@ -44,7 +44,7 @@ on:
        yao_pkg_ver:
          description: '@yao-pkg/pkg version (e.g. 6.14.2) — @yao-pkg/pkg-fetch resolved from this'
          required: true
-         default: '6.17.0'
+         default: '6.18.2'
   push:
     tags:
       - "v*"
@@ -204,6 +204,20 @@ jobs:
                "mysql2": "3.13.0",
           PATCH_EOF
 
+          # server/Metrics patch
+          cat > patches/patch-server_Metrics_package.json << 'PATCH_EOF'
+          --- server/Metrics/package.json.orig    2026-02-24 18:13:24 UTC
+          +++ server/Metrics/package.json
+          @@ -5,6 +5,7 @@
+             "private": true,
+             "bin": "node_modules/statsd/bin/statsd",
+             "dependencies": {
+          +    "patch-package": "^8.0.0",
+               "statsd": "0.9.0"
+             },
+             "pkg": {
+          PATCH_EOF
+
           # web-apps/build patch
           cat > patches/patch-web-apps_build_package.json << 'PATCH_EOF'
           --- web-apps/build/package.json.orig	2026-02-23 07:24:11 UTC
@@ -256,9 +270,17 @@ jobs:
             --lockfile-version 3 --ignore-scripts --include=dev --prefix src/web-apps/vendor/framework7-react
           cd src/web-apps/vendor/framework7-react && npm shrinkwrap --dev --lockfile-version 3 && cd -
 
-          # 3-5. server/Metrics, server/FileConverter, server/Common (identical flags)
-          for subdir in Metrics FileConverter Common; do
-            echo "$(( $(echo "Metrics FileConverter Common" | tr ' ' '\n' | grep -n "^${subdir}$" | cut -d: -f1) + 2 )). server/${subdir} (production mode)..."
+          # 3. server/Metrics (production mode, patched)
+          echo "3. server/Metrics (production mode, patched)..."
+          rm -f src/server/Metrics/npm-shrinkwrap.json
+          patch -p0 -d src < patches/patch-server_Metrics_package.json
+          NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
+            --lockfile-version 3 --ignore-scripts --prefix src/server/Metrics
+          cd src/server/Metrics && npm shrinkwrap --lockfile-version 3 && cd -
+
+          # 4-5. server/FileConverter, server/Common (identical flags)
+          for subdir in FileConverter Common; do
+            echo "$(( $(echo "FileConverter Common" | tr ' ' '\n' | grep -n "^${subdir}$" | cut -d: -f1) + 3 )). server/${subdir} (production mode)..."
             NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
               --lockfile-version 3 --ignore-scripts --prefix "src/server/${subdir}"
             cd "src/server/${subdir}" && npm shrinkwrap --lockfile-version 3 && cd -
