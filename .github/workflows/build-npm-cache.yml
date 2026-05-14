@@ -1,6 +1,6 @@
 # .github/workflows/build-npm-cache.yml
 #
-# TWO-PHASE CACHE BUILD - MINIAML PACKUMENTS STRATEGY
+# TWO-PHASE CACHE BUILD - MINIMAL PACKUMENTS STRATEGY
 #
 # Phase 1: Generate/update shrinkwraps (temporary cache, then deleted)
 # Phase 2: Rebuild cache using updated shrinkwraps (tarballs only)
@@ -733,6 +733,7 @@ jobs:
       # ----------------------------
       - name: Create tag
         run: |
+          git push origin HEAD:${{ github.ref_name }}
           git tag "${{ steps.vars.outputs.release_tag }}"
           git push origin "${{ steps.vars.outputs.release_tag }}"
 
