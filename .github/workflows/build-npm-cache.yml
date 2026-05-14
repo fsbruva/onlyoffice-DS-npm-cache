@@ -453,6 +453,7 @@ jobs:
           echo "--- Cleaning up old artifacts ---"
           rm -rf _cacache shrinkwrap *.cpp.patch \
                  yao-pkg-*.json sdkjs-package.json
+          git rm --ignore-unmatch --cached "extra-patch-pkg-fetch_patches_node.v*.cpp.patch"
 
       - name: Capture artifacts
         run: |
