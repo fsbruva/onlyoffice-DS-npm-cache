@@ -8,7 +8,7 @@
       "name": "yao-pkg-seed",
       "version": "1.0.0",
       "dependencies": {
-        "@yao-pkg/pkg": "^6.18.2"
+        "@yao-pkg/pkg": "^6.19.0"
       }
     },
     "node_modules/@babel/code-frame": {
@@ -601,20 +601,19 @@
       }
     },
     "node_modules/@yao-pkg/pkg": {
-      "version": "6.18.2",
-      "resolved": "https://registry.npmjs.org/@yao-pkg/pkg/-/pkg-6.18.2.tgz",
-      "integrity": "sha512-lo+fNeV10ldTeTrDbgK2eYTIhKDqCUVVq7a4W3s7LiTwd9/8UKYdxBodVNNCbEd2JBtqKA4BZpevitfsOzyXig==",
+      "version": "6.19.0",
+      "resolved": "https://registry.npmjs.org/@yao-pkg/pkg/-/pkg-6.19.0.tgz",
+      "integrity": "sha512-Ys9Fn/F44C3nOTlNyhwviLyMxydgFzsB13jAAXKxEuIR7aAz8PrFlUpxTUlwaXUU847nlmg5mnaGIyOJpnVtRw==",
       "license": "MIT",
       "dependencies": {
         "@babel/generator": "^7.23.0",
         "@babel/parser": "^7.23.0",
         "@babel/traverse": "^7.23.0",
         "@babel/types": "^7.23.0",
-        "@roberts_lando/vfs": "^0.3.2",
+        "@roberts_lando/vfs": "^0.3.3",
         "@yao-pkg/pkg-fetch": "3.5.33",
         "esbuild": "^0.27.3",
         "into-stream": "^9.1.0",
-        "minimist": "^1.2.6",
         "multistream": "^4.1.0",
         "picocolors": "^1.1.0",
         "picomatch": "^4.0.2",
@@ -703,9 +702,9 @@
       }
     },
     "node_modules/bare-events": {
-      "version": "2.8.2",
-      "resolved": "https://registry.npmjs.org/bare-events/-/bare-events-2.8.2.tgz",
-      "integrity": "sha512-riJjyv1/mHLIPX4RwiK+oW9/4c3TEUeORHKefKAKnZ5kyslbN+HXowtbaVEqt4IMUB7OXlfixcs6gsFeo/jhiQ==",
+      "version": "2.8.3",
+      "resolved": "https://registry.npmjs.org/bare-events/-/bare-events-2.8.3.tgz",
+      "integrity": "sha512-HdUm8EMQBLaJvGUdidNNbqpA1kYkwNcb+MYxkxCLAPJGQzlv9J0C24h8V65Z4c5GLd/JEALDvpFCQgpLJqc0zw==",
       "license": "Apache-2.0",
       "peerDependencies": {
         "bare-abort-controller": "*"
