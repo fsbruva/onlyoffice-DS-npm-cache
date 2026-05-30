@@ -40,7 +40,7 @@ on:
        npm_version:
          description: 'npm version used in the jail (must match www/npm-node24 exactly)'
          required: true
-         default: '11.14.1'
+         default: '11.15.0'
        yao_pkg_ver:
          description: '@yao-pkg/pkg version (e.g. 6.14.2) — @yao-pkg/pkg-fetch resolved from this'
          required: true
