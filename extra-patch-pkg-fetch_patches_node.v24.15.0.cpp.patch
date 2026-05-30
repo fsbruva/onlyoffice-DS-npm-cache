@@ -1,7 +1,7 @@
-https://github.com/yao-pkg/pkg-fetch/raw/refs/tags/v3.5.33/patches/node.v24.14.1.cpp.patch
+https://github.com/yao-pkg/pkg-fetch/raw/refs/tags/v3.6.3/patches/node.v24.15.0.cpp.patch
 + local FreeBSD patches
---- yao-pkg/node_modules/@yao-pkg/pkg-fetch/patches/node.v24.14.1.cpp.patch
-+++ yao-pkg/node_modules/@yao-pkg/pkg-fetch/patches/node.v24.14.1.cpp.patch
+--- yao-pkg/node_modules/@yao-pkg/pkg-fetch/patches/node.v24.15.0.cpp.patch
++++ yao-pkg/node_modules/@yao-pkg/pkg-fetch/patches/node.v24.15.0.cpp.patch
 @@ -861,3 +861,153 @@ index f007c65232..002a00a6ae 100644
               'cflags_cc!': [ '-fno-rtti' ],
             }],
