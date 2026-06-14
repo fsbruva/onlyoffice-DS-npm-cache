@@ -222,6 +222,15 @@ jobs:
           cat > patches/patch-web-apps_build_package.json << 'PATCH_EOF'
           --- web-apps/build/package.json.orig	2026-02-23 07:24:11 UTC
           +++ web-apps/build/package.json
+          @@ -6,7 +6,7 @@
+             "dependencies": {
+               "@babel/core": "^7.25.2",
+               "@babel/preset-env": "^7.25.3",
+          -    "grunt": "^1.6.1",
+          +    "grunt": "^1.6.2",
+               "grunt-babel": "^8.0.0",
+               "grunt-contrib-clean": "^2.0.1",
+               "grunt-contrib-concat": "^2.0.0",
           @@ -29,6 +29,8 @@
                "iconv-lite": "^0.6.3",
                "less-plugin-clean-css": "1.5.1",
@@ -325,7 +334,7 @@ jobs:
             "private": true,
             "dependencies": {
               "grunt-cli": "^1.5.0",
-              "grunt": "^1.6.1"
+              "grunt": "^1.6.2"
             }
           }
           EOF
