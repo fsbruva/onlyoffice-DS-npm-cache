@@ -17,7 +17,7 @@
 #   Production mode: 8 directories (Metrics, DocService patched)
 #   Full mode: 5 directories (including 2 arch-specific yao-pkg)
 #
-# Expected cache size: ~189MB (tarballs only)
+# Expected cache size: ~178MB (tarballs only)
 # Packument overhead: 11%
 
 name: Build npm Cache (Minimal Packuments)
@@ -40,11 +40,11 @@ on:
        npm_version:
          description: 'npm version used in the jail (must match www/npm-node24 exactly)'
          required: true
-         default: '11.15.0'
+         default: '11.17.0'
        yao_pkg_ver:
          description: '@yao-pkg/pkg version (e.g. 6.14.2) — @yao-pkg/pkg-fetch resolved from this'
          required: true
-         default: '6.20.0'
+         default: '6.21.0'
   push:
     tags:
       - "v*"
