@@ -171,7 +171,7 @@ jobs:
 
           # server/package.json patch
           cat > patches/patch-server_package.json << 'PATCH_EOF'
-          --- server/package.json.orig	2026-02-23 07:24:11 UTC
+          --- server/package.json.orig  2026-02-23 07:24:11 UTC
           +++ server/package.json
           @@ -4,9 +4,11 @@
              "homepage": "https://www.onlyoffice.com",
@@ -190,7 +190,7 @@ jobs:
 
           # server/DocService patch
           cat > patches/patch-server_DocService_package.json << 'PATCH_EOF'
-          --- server/DocService/package.json.orig	2026-02-23 07:24:11 UTC
+          --- server/DocService/package.json.orig       2026-02-23 07:24:11 UTC
           +++ server/DocService/package.json
           @@ -28,7 +28,8 @@
                "mime-db": "1.53.0",
@@ -220,7 +220,7 @@ jobs:
 
           # web-apps/build patch
           cat > patches/patch-web-apps_build_package.json << 'PATCH_EOF'
-          --- web-apps/build/package.json.orig	2026-02-23 07:24:11 UTC
+          --- web-apps/build/package.json.orig  2026-02-23 07:24:11 UTC
           +++ web-apps/build/package.json
           @@ -6,7 +6,7 @@
              "dependencies": {
@@ -271,55 +271,66 @@ jobs:
           echo "1. sdkjs/build (production mode)..."
           NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --prefix src/sdkjs/build
-          cd src/sdkjs/build && npm shrinkwrap --lockfile-version 3 && cd -
+          npm install --prefix src/sdkjs/build --package-lock-only --lockfile-version 3
+          mv src/sdkjs/build/package-lock.json src/sdkjs/build/npm-shrinkwrap.json
 
           # 2. framework7-react
           echo "2. framework7-react (production mode + --include=dev)..."
           NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --include=dev --prefix src/web-apps/vendor/framework7-react
-          cd src/web-apps/vendor/framework7-react && npm shrinkwrap --dev --lockfile-version 3 && cd -
+          npm install --prefix src/web-apps/vendor/framework7-react \
+            --package-lock-only --lockfile-version 3
+          mv src/web-apps/vendor/framework7-react/package-lock.json \
+             src/web-apps/vendor/framework7-react/npm-shrinkwrap.json
 
           # 3. server/Metrics (production mode, patched)
           echo "3. server/Metrics (production mode, patched)..."
-          rm -f src/server/Metrics/npm-shrinkwrap.json
+          rm -f src/server/Metrics/npm-shrinkwrap.json src/server/Metrics/package-lock.json
           patch -p0 -d src < patches/patch-server_Metrics_package.json
           NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --prefix src/server/Metrics
-          cd src/server/Metrics && npm shrinkwrap --lockfile-version 3 && cd -
+          npm install --prefix src/server/Metrics --package-lock-only --lockfile-version 3
+          mv src/server/Metrics/package-lock.json src/server/Metrics/npm-shrinkwrap.json
 
           # 4-5. server/FileConverter, server/Common (identical flags)
           for subdir in FileConverter Common; do
             echo "$(( $(echo "FileConverter Common" | tr ' ' '\n' | grep -n "^${subdir}$" | cut -d: -f1) + 3 )). server/${subdir} (production mode)..."
             NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
               --lockfile-version 3 --ignore-scripts --prefix "src/server/${subdir}"
-            cd "src/server/${subdir}" && npm shrinkwrap --lockfile-version 3 && cd -
+            npm install --prefix "src/server/${subdir}" --package-lock-only --lockfile-version 3
+            mv "src/server/${subdir}/package-lock.json" "src/server/${subdir}/npm-shrinkwrap.json"
           done
 
       - name: Phase 1 - Production mode installations (6-8)
         run: |
           # 6. server
           echo "6. server (production mode, patched)..."
-          rm -f src/server/npm-shrinkwrap.json
+          rm -f src/server/npm-shrinkwrap.json src/server/package-lock.json
           patch -p0 -d src < patches/patch-server_package.json
           NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --prefix src/server
-          cd src/server && npm shrinkwrap --lockfile-version 3 && cd -
+          npm install --prefix src/server --package-lock-only --lockfile-version 3
+          mv src/server/package-lock.json src/server/npm-shrinkwrap.json
 
           # 7. server/DocService
           echo "7. server/DocService (production mode, patched)..."
-          rm -f src/server/DocService/npm-shrinkwrap.json
+          rm -f src/server/DocService/npm-shrinkwrap.json src/server/DocService/package-lock.json
           patch -p0 -d src < patches/patch-server_DocService_package.json
           NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --prefix src/server/DocService
-          cd src/server/DocService && npm shrinkwrap --lockfile-version 3 && cd -
+          npm install --prefix src/server/DocService --package-lock-only --lockfile-version 3
+          mv src/server/DocService/package-lock.json src/server/DocService/npm-shrinkwrap.json
 
           # 8. document-server-integration
           echo "8. document-server-integration (production mode, --omit=dev)..."
           NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --omit=dev \
             --prefix src/document-server-integration/web/documentserver-example/nodejs
-          cd src/document-server-integration/web/documentserver-example/nodejs && \
-            npm shrinkwrap --lockfile-version 3 && cd -
+          npm install \
+            --prefix src/document-server-integration/web/documentserver-example/nodejs \
+            --package-lock-only --lockfile-version 3
+          mv src/document-server-integration/web/documentserver-example/nodejs/package-lock.json \
+             src/document-server-integration/web/documentserver-example/nodejs/npm-shrinkwrap.json
 
       - name: Phase 1 - Full mode installations (9-11)
         run: |
@@ -340,22 +351,27 @@ jobs:
           EOF
           npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --prefix src/sdkjs
-          cd src/sdkjs && npm shrinkwrap --lockfile-version 3 && cd -
+          npm install --prefix src/sdkjs --package-lock-only --lockfile-version 3
+          mv src/sdkjs/package-lock.json src/sdkjs/npm-shrinkwrap.json
 
           # 10. web-apps/build
           echo "10. web-apps/build (full mode, patched)..."
           patch -p0 -d src < patches/patch-web-apps_build_package.json
           npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts --prefix src/web-apps/build
-          cd src/web-apps/build && npm shrinkwrap --lockfile-version 3 && cd -
+          npm install --prefix src/web-apps/build --package-lock-only --lockfile-version 3
+          mv src/web-apps/build/package-lock.json src/web-apps/build/npm-shrinkwrap.json
 
           # 11. document-server-package/home/npm
           echo "11. document-server-package/home/npm (full mode)..."
           npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
             --lockfile-version 3 --ignore-scripts \
             --prefix src/document-server-package/common/documentserver/home/npm
-          cd src/document-server-package/common/documentserver/home/npm && \
-            npm shrinkwrap --lockfile-version 3 && cd -
+          npm install \
+            --prefix src/document-server-package/common/documentserver/home/npm \
+            --package-lock-only --lockfile-version 3
+          mv src/document-server-package/common/documentserver/home/npm/package-lock.json \
+             src/document-server-package/common/documentserver/home/npm/npm-shrinkwrap.json
 
       - name: Phase 1 - yao-pkg installations (12a-12b)
         run: |
@@ -376,7 +392,8 @@ jobs:
             npm install --os freebsd --cpu "${arch}" --cache "${TEMP_CACHE}" \
               --lockfile-version 3 --ignore-scripts --prefix "src/yao-pkg-${arch}" \
               "@yao-pkg/pkg@${YAO_PKG_VER}"
-            cd "src/yao-pkg-${arch}" && npm shrinkwrap --lockfile-version 3 && cd -
+            npm install --prefix "src/yao-pkg-${arch}" --package-lock-only --lockfile-version 3
+            mv "src/yao-pkg-${arch}/package-lock.json" "src/yao-pkg-${arch}/npm-shrinkwrap.json"
           done
 
           echo "Phase 1 complete: All 13 shrinkwraps generated"
