@@ -5,6 +5,44 @@
 # Phase 1: Generate/update shrinkwraps (temporary cache, then deleted)
 # Phase 2: Rebuild cache using updated shrinkwraps (tarballs only)
 #
+# pkg-fetch / FreeBSD Node synchronization:
+#
+#   The FreeBSD ports www/node${NODE_MAJOR} version is the Node.js version
+#   that this cache is intended to build.
+#
+#   @yao-pkg/pkg is installed at its published version. Its bundled
+#   @yao-pkg/pkg-fetch may lag behind the FreeBSD Node version.
+#
+#   When the published pkg-fetch already supports the FreeBSD Node version,
+#   the published pkg-fetch package is used unchanged.
+#
+#   When it lags behind:
+#
+#     1. @yao-pkg/pkg-fetch HEAD is checked out.
+#     2. HEAD must contain a patch for the FreeBSD Node version.
+#     3. patches.json and the Node patch are copied from HEAD into the
+#        installed/published pkg-fetch package.
+#     4. patch-package generates a local "leapfrog" patch which upgrades
+#        the published pkg-fetch package to the required Node version.
+#     5. FreeBSD's node${NODE_MAJOR} patches are appended to the exact
+#        pkg-fetch patch for that Node version.
+#
+#   This produces two independent artifacts:
+#
+#     extra-patch-pkg-fetch_leapfrog.patch
+#
+#       Updates the published pkg-fetch package's patches.json and
+#       node.v${NODE_VER}.cpp.patch to the corresponding pkg-fetch HEAD
+#       versions.
+#
+#     extra-patch-pkg-fetch_patches_node.v${NODE_VER}.cpp.patch
+#
+#       Adds the FreeBSD-specific Node patches to the exact pkg-fetch
+#       patch for NODE_VER.
+#
+#   If the published pkg-fetch already supports NODE_VER, the leapfrog
+#   patch is not generated.
+#
 # KEY: Match NODE_ENV and flags used by actual build scripts
 # KEY: Use THREE flags in Phase 2 to prevent MOST packument fetching:
 #      --legacy-peer-deps (skip peer dependency resolution)
@@ -14,7 +52,7 @@
 # KEY: Building on x64 for FreeBSD requires --cpu x64 flag (except aarch64)
 #
 # Shrinkwrap files (13 dirs - tarballs only, minimal packuments):
-#   Production mode: 8 directories (Metrics, DocService patched)
+#   Production mode: 8 directories
 #   Full mode: 5 directories (including 2 arch-specific yao-pkg)
 #
 # Expected cache size: ~178MB (tarballs only)
@@ -23,39 +61,41 @@
 name: Build npm Cache (Minimal Packuments)
 
 on:
-  workflow_dispatch:  # Manual trigger only
-     inputs:
-       ds_version:
-         description: 'DISTVERSION (e.g. 9.1.0)'
-         required: true
-         default: '9.4.0'
-       ds_build:
-         description: 'DS_BUILD number (e.g. 177)'
-         required: true
-         default: '129'
-       node_major:
-         description: 'Node.js major version (e.g. 24) — minor/patch resolved automatically'
-         required: true
-         default: '24'
-       npm_version:
-         description: 'npm version used in the jail (must match www/npm-node24 exactly)'
-         required: true
-         default: '12.0.2'
-       yao_pkg_ver:
-         description: '@yao-pkg/pkg version (e.g. 6.14.2) — @yao-pkg/pkg-fetch resolved from this'
-         required: true
-         default: '6.22.0'
+  workflow_dispatch:
+    inputs:
+      ds_version:
+        description: 'DISTVERSION (e.g. 9.1.0)'
+        required: true
+        default: '9.4.0'
+      ds_build:
+        description: 'DS_BUILD number (e.g. 177)'
+        required: true
+        default: '129'
+      node_major:
+        description: 'Node.js major version (e.g. 24) — exact version resolved from FreeBSD ports'
+        required: true
+        default: '24'
+      npm_version:
+        description: 'npm version used in the jail (must match www/npm-node24 exactly)'
+        required: true
+        default: '12.0.2'
+      yao_pkg_ver:
+        description: '@yao-pkg/pkg version (e.g. 6.14.2) — @yao-pkg/pkg-fetch resolved from this'
+        required: true
+        default: '6.22.0'
   push:
     tags:
       - "v*"
 
 env:
-  DS_TAG:      "v${{ github.event.inputs.ds_version }}.${{ github.event.inputs.ds_build }}"
-  NODE_MAJOR:  "${{ github.event.inputs.node_major }}"
-  NPM_VER:     "${{ github.event.inputs.npm_version }}"
+  DS_VERSION:  "${{ github.event.inputs.ds_version }}"
+  DS_BUILD:   "${{ github.event.inputs.ds_build }}"
+  DS_TAG:     "v${{ github.event.inputs.ds_version }}.${{ github.event.inputs.ds_build }}"
+  NODE_MAJOR: "${{ github.event.inputs.node_major }}"
+  NPM_VER:    "${{ github.event.inputs.npm_version }}"
   YAO_PKG_VER: "${{ github.event.inputs.yao_pkg_ver }}"
-  NPM_CACHE:   "${{ github.workspace }}/npm-cache"
-  TEMP_CACHE:  "${{ github.workspace }}/temp-cache"
+  NPM_CACHE:  "${{ github.workspace }}/npm-cache"
+  TEMP_CACHE: "${{ github.workspace }}/temp-cache"
 
 jobs:
   build-cache:
@@ -66,107 +106,278 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      # Step 1: Bootstrap with any Node in the requested major so we have npm available
-      # to fetch @yao-pkg/pkg and inspect its bundled pkg-fetch patches.
-      - name: Bootstrap Node.js ${{ github.event.inputs.node_major }}.x (version resolution only)
+
+      # ================================================================
+      # BOOTSTRAP
+      # ================================================================
+
+      # Bootstrap with any Node in the requested major so npm is available.
+      # The exact Node version is determined from FreeBSD ports below.
+      - name: Bootstrap Node.js ${{ github.event.inputs.node_major }}.x
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_MAJOR }}.x
 
-      # Step 2: Install @yao-pkg/pkg into a temp dir. pkg-fetch is a real dependency
-      # so npm installs it alongside pkg. We then read its patches/ directory directly
-      # — the patch filenames (node.vX.Y.Z.cpp.patch) are the authoritative list of
-      # supported exact Node versions. No registry queries, no JSON parsing needed.
-      - name: Resolve exact Node and pkg-fetch versions from @yao-pkg/pkg
-        id: meta
-        run: |
-          mkdir -p /tmp/ver-probe/ver-cache
-          npm install --prefix /tmp/ver-probe --cache /tmp/ver-probe/ver-cache --ignore-scripts \
-            "@yao-pkg/pkg@${YAO_PKG_VER}"
-
-          # Derive exact Node version from pkg-fetch patch filenames, filtered to requested major
-          NODE_VER=$(ls /tmp/ver-probe/node_modules/@yao-pkg/pkg-fetch/patches/ \
-            | grep -oP 'node\.v\K[0-9]+\.[0-9]+\.[0-9]+' \
-            | grep "^${NODE_MAJOR}\." \
-            | sort -V | tail -1)
-
-          # Read pkg-fetch version directly from pkg's package.json (already on disk)
-          PKG_FETCH_VER=$(node -e "
-            const p = require('/tmp/ver-probe/node_modules/@yao-pkg/pkg/package.json');
-            console.log(p.dependencies['@yao-pkg/pkg-fetch'].replace(/^[\\^~]/,''));
-          ")
-
-          rm -rf /tmp/ver-probe
-
-          if [ -z "${NODE_VER}" ]; then
-            echo "ERROR: No pkg-fetch patch found for Node major ${NODE_MAJOR}"
-            echo "  Check available patches in @yao-pkg/pkg-fetch@${PKG_FETCH_VER}/patches/"
-            exit 1
-          fi
-
-          # NODE_VER: output for setup-node with: field; env for all run: steps
-          echo "node=${NODE_VER}"            >> $GITHUB_OUTPUT
-          echo "NODE_VER=${NODE_VER}"         >> $GITHUB_ENV
-          # PKG_FETCH_VER: only used in run: steps, env is sufficient
-          echo "PKG_FETCH_VER=${PKG_FETCH_VER}" >> $GITHUB_ENV
-
-          echo "Resolved versions:"
-          echo "  Node:               ${NODE_VER}  (from pkg-fetch patch filenames)"
-          echo "  npm (jail/input):   ${NPM_VER}"
-          echo "  @yao-pkg/pkg:       ${YAO_PKG_VER}"
-          echo "  @yao-pkg/pkg-fetch: ${PKG_FETCH_VER}  (from pkg's package.json)"
-
-      # Step 3: Re-run setup-node with the exact patch version derived above.
-      # actions/setup-node overwrites PATH cleanly each time it runs.
-      - name: Install Node.js ${{ steps.meta.outputs.node }} (exact version for pkg-fetch)
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ steps.meta.outputs.node }}
-
-      # Step 4: Shadow the runner's npm with the jail-matched version.
-      # The Ubuntu runner ships a different npm major; the global-prefix workaround
-      # ensures every subsequent step uses the version that matches www/npm-nodeXX.
-      - name: Install npm@${{ env.NPM_VER }} to match jail
-        run: |
-          mkdir -p ~/.npm-global
-          npm config set prefix ~/.npm-global
-          echo "$HOME/.npm-global/bin" >> $GITHUB_PATH
-          npm install -g "npm@${NPM_VER}"
-
-      - name: Verify Node and npm versions
-        run: |
-          echo "Node: $(node --version)"
-          echo "npm:  $(npm --version)"
-
+      # Checkout cache repository before generating metadata.
       - name: Checkout cache repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
 
-      - name: Clone source repositories
-        run: |
-          echo "Building cache for DS_TAG=${DS_TAG}"
-          for repo in web-apps server sdkjs document-server-integration document-server-package; do
-            git clone --depth 1 --branch "${DS_TAG}" --single-branch \
-              "https://github.com/ONLYOFFICE/${repo}.git" "src/${repo}"
-          done
+      # ================================================================
+      # RESOLVE FREEBSD NODE VERSION
+      # ================================================================
 
-          echo "=== web-apps    ===" && git -C src/web-apps describe --tags
-          echo "=== server      ===" && git -C src/server describe --tags
-          echo "=== sdkjs       ===" && git -C src/sdkjs describe --tags
-          echo "=== integration ===" && git -C src/document-server-integration describe --tags
-          echo "=== ds-package  ===" && git -C src/document-server-package describe --tags
-
+      # FreeBSD ports is the authoritative source for the Node version
+      # that the cache must build.
       - name: Clone FreeBSD ports tree
         run: |
-          echo "--- Cloning FreeBSD ports tree (shallow) ---"
-          git clone --depth 1 https://github.com/freebsd/freebsd-ports.git "${{ github.workspace }}/freebsd-ports"
-          echo "  ✓ Ports tree cloned"
+          echo "--- Cloning FreeBSD ports tree ---"
+          git clone --depth 1 \
+            https://github.com/freebsd/freebsd-ports.git \
+            "${{ github.workspace }}/freebsd-ports"
+
+          PORTS_SHA=$(git -C "${{ github.workspace }}/freebsd-ports" rev-parse HEAD)
+
+          NODE_PORT_DIR="${{ github.workspace }}/freebsd-ports/www/node${NODE_MAJOR}"
+          NODE_VERSION_FILE="${NODE_PORT_DIR}/Makefile.version"
+
+          if [ ! -f "${NODE_VERSION_FILE}" ]; then
+            echo "ERROR: ${NODE_VERSION_FILE} does not exist"
+            exit 1
+          fi
+
+          FREEBSD_NODE_VER=$(sed -nE \
+            's/^NODEJS_PORTVERSION[[:space:]]*=[[:space:]]*//p' \
+            "${NODE_VERSION_FILE}" | head -1)
+
+          if [ -z "${FREEBSD_NODE_VER}" ]; then
+            echo "ERROR: Could not determine Node version from:"
+            echo "  ${NODE_VERSION_FILE}"
+            exit 1
+          fi
+
+          if ! printf '%s\n' "${FREEBSD_NODE_VER}" | \
+              grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: Invalid Node version: ${FREEBSD_NODE_VER}"
+            exit 1
+          fi
+
+          echo "FREEBSD_NODE_VER=${FREEBSD_NODE_VER}" >> "$GITHUB_ENV"
+          echo "FREEBSD_PORTS_SHA=${PORTS_SHA}" >> "$GITHUB_ENV"
+
+          echo "FreeBSD ports:"
+          echo "  commit: ${PORTS_SHA}"
+          echo "  port:   www/node${NODE_MAJOR}"
+          echo "  Node:   ${FREEBSD_NODE_VER}"
+
+      # ================================================================
+      # INSTALL PUBLISHED PKG AND DETERMINE PKG-FETCH VERSION
+      # ================================================================
+
+      # Install the published @yao-pkg/pkg package and inspect the
+      # pkg-fetch package that npm actually installed.
+      #
+      # IMPORTANT:
+      #   PUBLISHED_NODE_VER describes what the released pkg-fetch package
+      #   supports. It is deliberately distinct from FREEBSD_NODE_VER.
+      - name: Resolve published pkg-fetch version
+        id: meta
+        run: |
+          set -e
+
+          rm -rf /tmp/ver-probe
+          mkdir -p /tmp/ver-probe/ver-cache
+
+          npm install \
+            --prefix /tmp/ver-probe \
+            --cache /tmp/ver-probe/ver-cache \
+            --ignore-scripts \
+            "@yao-pkg/pkg@${YAO_PKG_VER}"
+
+          PKG_FETCH_VER=$(node -e "
+            const p = require('/tmp/ver-probe/node_modules/@yao-pkg/pkg/package.json');
+            const v = p.dependencies['@yao-pkg/pkg-fetch'];
+            if (!v) process.exit(1);
+            console.log(v.replace(/^[\\^~]/,''));
+          ")
+
+          PUBLISHED_NODE_VER=$(find \
+              /tmp/ver-probe/node_modules/@yao-pkg/pkg-fetch/patches \
+              -maxdepth 1 \
+              -type f \
+              -name 'node.v*.cpp.patch' \
+              -printf '%f\n' \
+            | grep -oP '^node\.v\K[0-9]+\.[0-9]+\.[0-9]+(?=\.cpp\.patch$)' \
+            | grep "^${NODE_MAJOR}\." \
+            | sort -V \
+            | tail -1)
+
+          if [ -z "${PKG_FETCH_VER}" ]; then
+            echo "ERROR: Could not determine pkg-fetch version"
+            exit 1
+          fi
+
+          if [ -z "${PUBLISHED_NODE_VER}" ]; then
+            echo "ERROR: Published pkg-fetch ${PKG_FETCH_VER} has no"
+            echo "       patch for Node major ${NODE_MAJOR}"
+            exit 1
+          fi
+
+          echo "PKG_FETCH_VER=${PKG_FETCH_VER}" >> "$GITHUB_ENV"
+          echo "PUBLISHED_NODE_VER=${PUBLISHED_NODE_VER}" >> "$GITHUB_ENV"
+
+          echo "Published @yao-pkg/pkg:"
+          echo "  version:       ${YAO_PKG_VER}"
+          echo "  pkg-fetch:     ${PKG_FETCH_VER}"
+          echo "  published Node: ${PUBLISHED_NODE_VER}"
+          echo ""
+          echo "FreeBSD target:"
+          echo "  Node:          ${FREEBSD_NODE_VER}"
+
+          if [ "${PUBLISHED_NODE_VER}" = "${FREEBSD_NODE_VER}" ]; then
+            echo "  pkg-fetch synchronization: NOT REQUIRED"
+          else
+            echo "  pkg-fetch synchronization: REQUIRED"
+          fi
+
+          rm -rf /tmp/ver-probe
+
+      # ================================================================
+      # CHECKOUT PKG-FETCH HEAD WHEN A LEAPFROG IS REQUIRED
+      # ================================================================
+
+      - name: Checkout pkg-fetch HEAD for leapfrog
+        if: env.PUBLISHED_NODE_VER != env.FREEBSD_NODE_VER
+        run: |
+          set -e
+
+          echo "--- Published pkg-fetch is behind FreeBSD Node ---"
+          echo "Published Node: ${PUBLISHED_NODE_VER}"
+          echo "FreeBSD Node:   ${FREEBSD_NODE_VER}"
+          echo ""
+          echo "--- Cloning @yao-pkg/pkg-fetch HEAD ---"
+
+          git clone --depth 1 \
+            https://github.com/yao-pkg/pkg-fetch.git \
+            "${{ github.workspace }}/pkg-fetch-head"
+
+          PKG_FETCH_HEAD_SHA=$(git -C "${{ github.workspace }}/pkg-fetch-head" rev-parse HEAD)
+
+          echo "PKG_FETCH_HEAD_SHA=${PKG_FETCH_HEAD_SHA}" >> "$GITHUB_ENV"
+
+          HEAD_PATCHES_JSON="${{ github.workspace }}/pkg-fetch-head/patches/patches.json"
+          HEAD_NODE_PATCH="${{ github.workspace }}/pkg-fetch-head/patches/node.v${FREEBSD_NODE_VER}.cpp.patch"
+
+          if [ ! -f "${HEAD_PATCHES_JSON}" ]; then
+            echo "ERROR: pkg-fetch HEAD does not contain patches/patches.json"
+            exit 1
+          fi
+
+          if [ ! -f "${HEAD_NODE_PATCH}" ]; then
+            echo "ERROR: pkg-fetch HEAD does not contain:"
+            echo "  patches/node.v${FREEBSD_NODE_VER}.cpp.patch"
+            echo ""
+            echo "Refusing to invent or relabel a pkg-fetch patch."
+            exit 1
+          fi
+
+          if ! node -e "
+            const p = require('${HEAD_PATCHES_JSON}');
+            const key = 'v${FREEBSD_NODE_VER}';
+            if (!Object.prototype.hasOwnProperty.call(p, key)) {
+              console.error('ERROR: patches.json does not contain ' + key);
+              process.exit(1);
+            }
+            const expected = 'node.v${FREEBSD_NODE_VER}.cpp.patch';
+            if (!Array.isArray(p[key]) || !p[key].includes(expected)) {
+              console.error('ERROR: patches.json does not map ' + key + ' to ' + expected);
+              process.exit(1);
+            }
+          "; then
+            exit 1
+          fi
+
+          echo "pkg-fetch HEAD:"
+          echo "  commit: ${PKG_FETCH_HEAD_SHA}"
+          echo "  Node:   ${FREEBSD_NODE_VER}"
+          echo "  patch:  node.v${FREEBSD_NODE_VER}.cpp.patch"
+
+      # ================================================================
+      # USE THE EXACT FREEBSD NODE VERSION
+      # ================================================================
+
+      - name: Install Node.js ${{ env.FREEBSD_NODE_VER }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.FREEBSD_NODE_VER }}
+
+      # Shadow the runner's npm with the jail-matched version.
+      - name: Install npm@${{ env.NPM_VER }} to match jail
+        run: |
+          set -e
+
+          mkdir -p ~/.npm-global
+          npm config set prefix ~/.npm-global
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          npm install -g "npm@${NPM_VER}"
+
+      - name: Verify Node and npm versions
+        run: |
+          set -e
+
+          echo "Node: $(node --version)"
+          echo "npm:  $(npm --version)"
+
+          test "$(node --version)" = "v${FREEBSD_NODE_VER}"
+          test "$(npm --version)" = "${NPM_VER}"
+
+      # ================================================================
+      # SOURCE CHECKOUT
+      # ================================================================
+
+      - name: Clone ONLYOFFICE source repositories
+        run: |
+          set -e
+
+          echo "Building cache for DS_TAG=${DS_TAG}"
+
+          for repo in \
+            web-apps \
+            server \
+            sdkjs \
+            document-server-integration \
+            document-server-package
+          do
+            git clone \
+              --depth 1 \
+              --branch "${DS_TAG}" \
+              --single-branch \
+              "https://github.com/ONLYOFFICE/${repo}.git" \
+              "src/${repo}"
+          done
+
+          echo "=== web-apps    ==="
+          git -C src/web-apps describe --tags
+          echo "=== server      ==="
+          git -C src/server describe --tags
+          echo "=== sdkjs       ==="
+          git -C src/sdkjs describe --tags
+          echo "=== integration ==="
+          git -C src/document-server-integration describe --tags
+          echo "=== ds-package  ==="
+          git -C src/document-server-package describe --tags
+
+      # ================================================================
+      # CREATE ONLYOFFICE PATCHES
+      # ================================================================
 
       - name: Create patches
         run: |
-          echo "--- Creating patches for version ${DS_VERSION} ---"
+          set -e
+
+          echo "--- Creating patches for ${DS_TAG} ---"
           mkdir -p patches
 
           # server/package.json patch
@@ -256,74 +467,127 @@ jobs:
           PATCH_EOF
 
       # ================================================================
-      # PHASE 1: GENERATE/UPDATE SHRINKWRAPS
+      # PHASE 1: GENERATE / UPDATE SHRINKWRAPS
       # ================================================================
+
       - name: Phase 1 - Production mode installations (1-5)
         run: |
+          set -e
+
           echo "========================================"
           echo "PHASE 1: GENERATE/UPDATE SHRINKWRAPS"
           echo "========================================"
+
           mkdir -p "${TEMP_CACHE}"
 
           echo "GROUP A: Production mode installations"
 
           # 1. sdkjs/build
           echo "1. sdkjs/build (production mode)..."
-          NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --prefix src/sdkjs/build
-          mv src/sdkjs/build/package-lock.json src/sdkjs/build/npm-shrinkwrap.json
+          NODE_ENV=production npm install \
+            --os freebsd \
+            --cpu x64 \
+            --cache "${TEMP_CACHE}" \
+            --lockfile-version 3 \
+            --ignore-scripts \
+            --prefix src/sdkjs/build
+          mv src/sdkjs/build/package-lock.json \
+             src/sdkjs/build/npm-shrinkwrap.json
 
           # 2. framework7-react
           echo "2. framework7-react (production mode + --include=dev)..."
-          NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --include=dev --prefix src/web-apps/vendor/framework7-react
+          NODE_ENV=production npm install \
+            --os freebsd \
+            --cpu x64 \
+            --cache "${TEMP_CACHE}" \
+            --lockfile-version 3 \
+            --ignore-scripts \
+            --include=dev \
+            --prefix src/web-apps/vendor/framework7-react
           mv src/web-apps/vendor/framework7-react/package-lock.json \
              src/web-apps/vendor/framework7-react/npm-shrinkwrap.json
 
-          # 3. server/Metrics (production mode, patched)
+          # 3. server/Metrics
           echo "3. server/Metrics (production mode, patched)..."
-          rm -f src/server/Metrics/npm-shrinkwrap.json src/server/Metrics/package-lock.json
+          rm -f \
+            src/server/Metrics/npm-shrinkwrap.json \
+            src/server/Metrics/package-lock.json
           patch -p0 -d src < patches/patch-server_Metrics_package.json
-          NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --prefix src/server/Metrics
-          mv src/server/Metrics/package-lock.json src/server/Metrics/npm-shrinkwrap.json
+          NODE_ENV=production npm install \
+            --os freebsd \
+            --cpu x64 \
+            --cache "${TEMP_CACHE}" \
+            --lockfile-version 3 \
+            --ignore-scripts \
+            --prefix src/server/Metrics
+          mv src/server/Metrics/package-lock.json \
+             src/server/Metrics/npm-shrinkwrap.json
 
-          # 4-5. server/FileConverter, server/Common (identical flags)
+          # 4-5. server/FileConverter, server/Common
           for subdir in FileConverter Common; do
-            echo "$(( $(echo "FileConverter Common" | tr ' ' '\n' | grep -n "^${subdir}$" | cut -d: -f1) + 3 )). server/${subdir} (production mode)..."
-            NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-              --lockfile-version 3 --ignore-scripts --prefix "src/server/${subdir}"
-            mv "src/server/${subdir}/package-lock.json" "src/server/${subdir}/npm-shrinkwrap.json"
+            echo "server/${subdir} (production mode)..."
+            NODE_ENV=production npm install \
+              --os freebsd \
+              --cpu x64 \
+              --cache "${TEMP_CACHE}" \
+              --lockfile-version 3 \
+              --ignore-scripts \
+              --prefix "src/server/${subdir}"
+            mv "src/server/${subdir}/package-lock.json" \
+               "src/server/${subdir}/npm-shrinkwrap.json"
           done
 
       - name: Phase 1 - Production mode installations (6-8)
         run: |
+          set -e
+
           # 6. server
           echo "6. server (production mode, patched)..."
           rm -f src/server/npm-shrinkwrap.json src/server/package-lock.json
           patch -p0 -d src < patches/patch-server_package.json
-          NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --prefix src/server
+          NODE_ENV=production npm install \
+            --os freebsd \
+            --cpu x64 \
+            --cache "${TEMP_CACHE}" \
+            --lockfile-version 3 \
+            --ignore-scripts \
+            --prefix src/server
           mv src/server/package-lock.json src/server/npm-shrinkwrap.json
 
           # 7. server/DocService
           echo "7. server/DocService (production mode, patched)..."
-          rm -f src/server/DocService/npm-shrinkwrap.json src/server/DocService/package-lock.json
+          rm -f \
+            src/server/DocService/npm-shrinkwrap.json \
+            src/server/DocService/package-lock.json
           patch -p0 -d src < patches/patch-server_DocService_package.json
-          NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --prefix src/server/DocService
-          mv src/server/DocService/package-lock.json src/server/DocService/npm-shrinkwrap.json
+          NODE_ENV=production npm install \
+            --os freebsd \
+            --cpu x64 \
+            --cache "${TEMP_CACHE}" \
+            --lockfile-version 3 \
+            --ignore-scripts \
+            --prefix src/server/DocService
+          mv src/server/DocService/package-lock.json \
+             src/server/DocService/npm-shrinkwrap.json
 
           # 8. document-server-integration
           echo "8. document-server-integration (production mode, --omit=dev)..."
-          NODE_ENV=production npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --omit=dev \
+          NODE_ENV=production npm install \
+            --os freebsd \
+            --cpu x64 \
+            --cache "${TEMP_CACHE}" \
+            --lockfile-version 3 \
+            --ignore-scripts \
+            --omit=dev \
             --prefix src/document-server-integration/web/documentserver-example/nodejs
-          mv src/document-server-integration/web/documentserver-example/nodejs/package-lock.json \
-             src/document-server-integration/web/documentserver-example/nodejs/npm-shrinkwrap.json
+          mv \
+            src/document-server-integration/web/documentserver-example/nodejs/package-lock.json \
+            src/document-server-integration/web/documentserver-example/nodejs/npm-shrinkwrap.json
 
       - name: Phase 1 - Full mode installations (9-11)
         run: |
+          set -e
+
           echo "GROUP B: Full mode installations"
 
           # 9. sdkjs
@@ -339,29 +603,49 @@ jobs:
             }
           }
           EOF
-          npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --prefix src/sdkjs
+
+          npm install \
+            --os freebsd \
+            --cpu x64 \
+            --cache "${TEMP_CACHE}" \
+            --lockfile-version 3 \
+            --ignore-scripts \
+            --prefix src/sdkjs
           mv src/sdkjs/package-lock.json src/sdkjs/npm-shrinkwrap.json
 
           # 10. web-apps/build
           echo "10. web-apps/build (full mode, patched)..."
           patch -p0 -d src < patches/patch-web-apps_build_package.json
-          npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts --prefix src/web-apps/build
-          mv src/web-apps/build/package-lock.json src/web-apps/build/npm-shrinkwrap.json
+          npm install \
+            --os freebsd \
+            --cpu x64 \
+            --cache "${TEMP_CACHE}" \
+            --lockfile-version 3 \
+            --ignore-scripts \
+            --prefix src/web-apps/build
+          mv src/web-apps/build/package-lock.json \
+             src/web-apps/build/npm-shrinkwrap.json
 
           # 11. document-server-package/home/npm
           echo "11. document-server-package/home/npm (full mode)..."
-          npm install --os freebsd --cpu x64 --cache "${TEMP_CACHE}" \
-            --lockfile-version 3 --ignore-scripts \
+          npm install \
+            --os freebsd \
+            --cpu x64 \
+            --cache "${TEMP_CACHE}" \
+            --lockfile-version 3 \
+            --ignore-scripts \
             --prefix src/document-server-package/common/documentserver/home/npm
-          mv src/document-server-package/common/documentserver/home/npm/package-lock.json \
-             src/document-server-package/common/documentserver/home/npm/npm-shrinkwrap.json
+          mv \
+            src/document-server-package/common/documentserver/home/npm/package-lock.json \
+            src/document-server-package/common/documentserver/home/npm/npm-shrinkwrap.json
 
       - name: Phase 1 - yao-pkg installations (12a-12b)
         run: |
+          set -e
+
           # Shared seed package.json for both arch dirs
           mkdir -p src/yao-pkg-arm64 src/yao-pkg-x64
+
           cat > src/yao-pkg-arm64/package.json << 'EOF'
           {
             "name": "yao-pkg-seed",
@@ -370,27 +654,42 @@ jobs:
             "dependencies": {}
           }
           EOF
-          cp src/yao-pkg-arm64/package.json src/yao-pkg-x64/package.json
+
+          cp src/yao-pkg-arm64/package.json \
+             src/yao-pkg-x64/package.json
 
           for arch in arm64 x64; do
-            echo "12$([ "$arch" = arm64 ] && echo a || echo b). yao-pkg-${arch} (full mode, ${arch})..."
-            npm install --os freebsd --cpu "${arch}" --cache "${TEMP_CACHE}" \
-              --lockfile-version 3 --ignore-scripts --prefix "src/yao-pkg-${arch}" \
+            echo "yao-pkg-${arch} (full mode, ${arch})..."
+
+            npm install \
+              --os freebsd \
+              --cpu "${arch}" \
+              --cache "${TEMP_CACHE}" \
+              --lockfile-version 3 \
+              --ignore-scripts \
+              --prefix "src/yao-pkg-${arch}" \
               "@yao-pkg/pkg@${YAO_PKG_VER}"
-            mv "src/yao-pkg-${arch}/package-lock.json" "src/yao-pkg-${arch}/npm-shrinkwrap.json"
+
+            mv \
+              "src/yao-pkg-${arch}/package-lock.json" \
+              "src/yao-pkg-${arch}/npm-shrinkwrap.json"
           done
 
           echo "Phase 1 complete: All 13 shrinkwraps generated"
           du -sh "${TEMP_CACHE}"
 
       # ================================================================
-      # PHASE 2: REBUILD CACHE (tarballs only)
+      # PHASE 2: REBUILD CACHE
       # ================================================================
+
       - name: Phase 2 - Production mode (1-5)
         run: |
+          set -e
+
           echo "========================================"
           echo "PHASE 2: REBUILD CACHE (tarballs only)"
           echo "========================================"
+
           rm -rf "${TEMP_CACHE}"
           mkdir -p "${NPM_CACHE}"
 
@@ -398,78 +697,130 @@ jobs:
 
           # 1. sdkjs/build
           rm -rf src/sdkjs/build/node_modules
-          NODE_ENV=production npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --prefix src/sdkjs/build
+          NODE_ENV=production npm install \
+            --os freebsd \
+            --cpu x64 \
+            --legacy-peer-deps \
+            --no-audit \
+            --no-fund \
+            --cache "${NPM_CACHE}" \
+            --ignore-scripts \
+            --prefix src/sdkjs/build
 
           # 2. framework7-react
           rm -rf src/web-apps/vendor/framework7-react/node_modules
-          NODE_ENV=production npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --include=dev \
+          NODE_ENV=production npm install \
+            --os freebsd \
+            --cpu x64 \
+            --legacy-peer-deps \
+            --no-audit \
+            --no-fund \
+            --cache "${NPM_CACHE}" \
+            --ignore-scripts \
+            --include=dev \
             --prefix src/web-apps/vendor/framework7-react
 
-          # 3-5. server/Metrics, server/FileConverter, server/Common (identical flags)
+          # 3-5. server/Metrics, server/FileConverter, server/Common
           for subdir in Metrics FileConverter Common; do
             rm -rf "src/server/${subdir}/node_modules"
-            NODE_ENV=production npm install --os freebsd --cpu x64 \
-              --legacy-peer-deps --no-audit --no-fund \
-              --cache "${NPM_CACHE}" --ignore-scripts --prefix "src/server/${subdir}"
+            NODE_ENV=production npm install \
+              --os freebsd \
+              --cpu x64 \
+              --legacy-peer-deps \
+              --no-audit \
+              --no-fund \
+              --cache "${NPM_CACHE}" \
+              --ignore-scripts \
+              --prefix "src/server/${subdir}"
           done
 
       - name: Phase 2 - Production mode (6-8)
         run: |
-          # 6-7. server and server/DocService (identical flags)
+          set -e
+
+          # 6-7. server and server/DocService
           for subdir in '' /DocService; do
             rm -rf "src/server${subdir}/node_modules"
-            NODE_ENV=production npm install --os freebsd --cpu x64 \
-              --legacy-peer-deps --no-audit --no-fund \
-              --cache "${NPM_CACHE}" --ignore-scripts --prefix "src/server${subdir}"
+
+            NODE_ENV=production npm install \
+              --os freebsd \
+              --cpu x64 \
+              --legacy-peer-deps \
+              --no-audit \
+              --no-fund \
+              --cache "${NPM_CACHE}" \
+              --ignore-scripts \
+              --prefix "src/server${subdir}"
           done
 
           # 8. document-server-integration
-          rm -rf src/document-server-integration/web/documentserver-example/nodejs/node_modules
-          NODE_ENV=production npm install --os freebsd --cpu x64 \
-            --legacy-peer-deps --no-audit --no-fund \
-            --cache "${NPM_CACHE}" --ignore-scripts --omit=dev \
+          rm -rf \
+            src/document-server-integration/web/documentserver-example/nodejs/node_modules
+
+          NODE_ENV=production npm install \
+            --os freebsd \
+            --cpu x64 \
+            --legacy-peer-deps \
+            --no-audit \
+            --no-fund \
+            --cache "${NPM_CACHE}" \
+            --ignore-scripts \
+            --omit=dev \
             --prefix src/document-server-integration/web/documentserver-example/nodejs
 
       - name: Phase 2 - Full mode (9-13)
         run: |
+          set -e
+
           echo "Full mode installations:"
 
-          # 9-11. sdkjs, web-apps/build, document-server-package (identical flags, x64)
-          for prefix in src/sdkjs src/web-apps/build \
-                        src/document-server-package/common/documentserver/home/npm; do
+          # 9-11. sdkjs, web-apps/build, document-server-package
+          for prefix in \
+            src/sdkjs \
+            src/web-apps/build \
+            src/document-server-package/common/documentserver/home/npm
+          do
             rm -rf "${prefix}/node_modules"
-            npm install --os freebsd --cpu x64 \
-              --legacy-peer-deps --no-audit --no-fund \
-              --cache "${NPM_CACHE}" --ignore-scripts --prefix "${prefix}"
+
+            npm install \
+              --os freebsd \
+              --cpu x64 \
+              --legacy-peer-deps \
+              --no-audit \
+              --no-fund \
+              --cache "${NPM_CACHE}" \
+              --ignore-scripts \
+              --prefix "${prefix}"
           done
 
           # 12a-12b. yao-pkg (arch-specific)
           for arch in arm64 x64; do
             rm -rf "src/yao-pkg-${arch}/node_modules"
-            npm install --os freebsd --cpu "${arch}" \
-              --legacy-peer-deps --no-audit --no-fund \
-              --cache "${NPM_CACHE}" --ignore-scripts --prefix "src/yao-pkg-${arch}"
+
+            npm install \
+              --os freebsd \
+              --cpu "${arch}" \
+              --legacy-peer-deps \
+              --no-audit \
+              --no-fund \
+              --cache "${NPM_CACHE}" \
+              --ignore-scripts \
+              --prefix "src/yao-pkg-${arch}"
           done
 
           echo "Phase 2 complete: 13 directories cached"
           du -sh "${NPM_CACHE}/_cacache"
 
-      - name: Clean up artifacts
-        run: |
-          echo "--- Cleaning up old artifacts ---"
-          rm -rf _cacache shrinkwrap *.cpp.patch \
-                 yao-pkg-*.json sdkjs-package.json
-          git rm --ignore-unmatch --cached "extra-patch-pkg-fetch_patches_node.v*.cpp.patch"
+      # ================================================================
+      # CAPTURE STANDARD CACHE ARTIFACTS
+      # ================================================================
 
       - name: Capture artifacts
         run: |
+          set -e
+
           echo "--- Capturing artifacts ---"
 
-          # Create all shrinkwrap destination directories in one call
           mkdir -p \
             src/shrinkwrap/sdkjs/build \
             src/shrinkwrap/web-apps/vendor/framework7-react \
@@ -482,87 +833,495 @@ jobs:
             src/shrinkwrap/document-server-package/common/documentserver/home/npm \
             src/shrinkwrap/document-server-integration/web/documentserver-example/nodejs
 
-          # Copy all 11 standard shrinkwraps (mirrors the mkdir -p list above)
           echo "Copying shrinkwrap files..."
+
           for rel_path in \
             sdkjs/build \
             web-apps/vendor/framework7-react \
+            web-apps/build \
             server/Metrics \
             server/FileConverter \
             server/Common \
             server \
             server/DocService \
             sdkjs \
-            web-apps/build \
             document-server-package/common/documentserver/home/npm \
             document-server-integration/web/documentserver-example/nodejs
           do
-            cp "src/${rel_path}/npm-shrinkwrap.json" "src/shrinkwrap/${rel_path}/"
+            cp \
+              "src/${rel_path}/npm-shrinkwrap.json" \
+              "src/shrinkwrap/${rel_path}/"
           done
 
-          # Copy yao-pkg arch-specific files
-          cp src/yao-pkg-arm64/npm-shrinkwrap.json yao-pkg-npm-shrinkwrap-aarch64.json
-          cp src/yao-pkg-x64/npm-shrinkwrap.json   yao-pkg-npm-shrinkwrap-amd64.json
-          cp src/yao-pkg-arm64/package.json         yao-pkg-package.json
+          cp \
+            src/yao-pkg-arm64/npm-shrinkwrap.json \
+            yao-pkg-npm-shrinkwrap-aarch64.json
 
-          # Copy created package.json
-          cp src/sdkjs/package.json sdkjs-package.json
+          cp \
+            src/yao-pkg-x64/npm-shrinkwrap.json \
+            yao-pkg-npm-shrinkwrap-amd64.json
+
+          cp \
+            src/yao-pkg-arm64/package.json \
+            yao-pkg-package.json
+
+          cp \
+            src/sdkjs/package.json \
+            sdkjs-package.json
 
           echo "All 13 shrinkwraps captured"
 
-      - name: Generate pkg-fetch patch
+      # ================================================================
+      # GENERATE PKG-FETCH LEAPFROG AND FREEBSD PATCHES
+      # ================================================================
+
+      - name: Generate pkg-fetch patches
         run: |
-          echo "--- Generating pkg-fetch FreeBSD node patch ---"
-          rm -rf "${GITHUB_WORKSPACE}/*.cpp.patch"
+          set -e
+
+          echo "========================================"
+          echo "GENERATING PKG-FETCH PATCHES"
+          echo "========================================"
+
+          rm -rf \
+            "${{ github.workspace }}/patch-workspace" \
+            "${{ github.workspace }}/pkg-fetch-head"
+
           mkdir -p "${{ github.workspace }}/patch-workspace"
+
           cd "${{ github.workspace }}/patch-workspace"
 
-          npm install --cache "${NPM_CACHE}" patch-package
-          npm install --cache "${NPM_CACHE}" "@yao-pkg/pkg@${YAO_PKG_VER}"
+          # Install patch-package and the published @yao-pkg/pkg.
+          npm install \
+            --cache "${NPM_CACHE}" \
+            patch-package
 
-          PKG_FETCH_VERSION="${PKG_FETCH_VER}"
-          NODE_VER="${NODE_VER}"
-          echo "Node: ${NODE_VER} (major: ${NODE_MAJOR}), pkg-fetch: ${PKG_FETCH_VERSION}"
+          npm install \
+            --cache "${NPM_CACHE}" \
+            "@yao-pkg/pkg@${YAO_PKG_VER}"
 
-          mkdir -p freebsd-patches
-          NODE_PORT_DIR="${{ github.workspace }}/freebsd-ports/www/node${NODE_MAJOR}/files"
+          PKG_FETCH_DIR="${{ github.workspace }}/patch-workspace/node_modules/@yao-pkg/pkg-fetch"
+          PKG_FETCH_PATCH_DIR="${PKG_FETCH_DIR}/patches"
 
-          if [ -d "${NODE_PORT_DIR}" ]; then
-            cp ${NODE_PORT_DIR}/patch-* freebsd-patches/ 2>/dev/null || true
-            patch_count=$(ls -1 freebsd-patches/patch-* 2>/dev/null | wc -l)
-            echo "Copied ${patch_count} FreeBSD patches"
+          TARGET_PATCH="node.v${FREEBSD_NODE_VER}.cpp.patch"
+          TARGET_PATCH_PATH="${PKG_FETCH_PATCH_DIR}/${TARGET_PATCH}"
+
+          if [ ! -f "${TARGET_PATCH_PATH}" ]; then
+            echo "ERROR: Installed published pkg-fetch does not contain:"
+            echo "  ${TARGET_PATCH}"
+            exit 1
           fi
 
-          cd node_modules/@yao-pkg/pkg-fetch/patches
-          for patch_file in "${{ github.workspace }}"/patch-workspace/freebsd-patches/patch-*; do
+          echo "Published pkg-fetch Node patch:"
+          echo "  ${TARGET_PATCH_PATH}"
+
+          mkdir -p freebsd-patches
+
+          NODE_PORT_DIR="${{ github.workspace }}/freebsd-ports/www/node${NODE_MAJOR}/files"
+
+          if [ ! -d "${NODE_PORT_DIR}" ]; then
+            echo "ERROR: FreeBSD Node port directory does not exist:"
+            echo "  ${NODE_PORT_DIR}"
+            exit 1
+          fi
+
+          cp "${NODE_PORT_DIR}"/patch-* freebsd-patches/ 2>/dev/null || true
+
+          PATCH_COUNT=$(find freebsd-patches \
+            -maxdepth 1 \
+            -type f \
+            -name 'patch-*' \
+            | wc -l)
+
+          echo "Copied ${PATCH_COUNT} FreeBSD Node patches"
+
+          if [ "${PATCH_COUNT}" -eq 0 ]; then
+            echo "ERROR: No FreeBSD Node patches were found"
+            exit 1
+          fi
+
+          # ------------------------------------------------------------
+          # Determine which pkg-fetch Node patch is the baseline.
+          #
+          # No divergence:
+          #   published package's patch is the baseline.
+          #
+          # Divergence:
+          #   pkg-fetch HEAD's exact Node patch is the baseline, and
+          #   patches.json is upgraded at the same time.
+          # ------------------------------------------------------------
+
+          if [ "${PUBLISHED_NODE_VER}" = "${FREEBSD_NODE_VER}" ]; then
+            echo "Published pkg-fetch already supports ${FREEBSD_NODE_VER}"
+            echo "No leapfrog patch is required."
+
+            echo "PKG_FETCH_LEAPFROG=false" >> "$GITHUB_ENV"
+            echo "PKG_FETCH_BASELINE=published" >> "$GITHUB_ENV"
+
+            cp \
+              "${TARGET_PATCH_PATH}" \
+              "${GITHUB_WORKSPACE}/published-node-patch.cpp.patch"
+
+          else
+            echo "Published pkg-fetch supports ${PUBLISHED_NODE_VER}"
+            echo "FreeBSD requires ${FREEBSD_NODE_VER}"
+            echo "Leapfrog is required."
+
+            if [ -z "${PKG_FETCH_HEAD_SHA:-}" ]; then
+              echo "ERROR: PKG_FETCH_HEAD_SHA is not set"
+              exit 1
+            fi
+
+            HEAD_PATCH="${{ github.workspace }}/pkg-fetch-head/patches/${TARGET_PATCH}"
+            HEAD_PATCHES_JSON="${{ github.workspace }}/pkg-fetch-head/patches/patches.json"
+
+            if [ ! -f "${HEAD_PATCH}" ]; then
+              echo "ERROR: Missing pkg-fetch HEAD patch:"
+              echo "  ${HEAD_PATCH}"
+              exit 1
+            fi
+
+            if [ ! -f "${HEAD_PATCHES_JSON}" ]; then
+              echo "ERROR: Missing pkg-fetch HEAD patches.json:"
+              echo "  ${HEAD_PATCHES_JSON}"
+              exit 1
+            fi
+
+            # Save the published patch as the baseline for later validation.
+            cp \
+              "${TARGET_PATCH_PATH}" \
+              "${GITHUB_WORKSPACE}/published-node-patch.cpp.patch"
+
+            # Replace the installed pkg-fetch metadata with the exact
+            # files from pkg-fetch HEAD.
+            cp \
+              "${HEAD_PATCHES_JSON}" \
+              "${PKG_FETCH_PATCH_DIR}/patches.json"
+
+            cp \
+              "${HEAD_PATCH}" \
+              "${TARGET_PATCH_PATH}"
+
+            # Generate the package-level patch. This records exactly what
+            # must be done to the published pkg-fetch package to make it
+            # understand the newer Node version.
+            npx patch-package "@yao-pkg/pkg-fetch"
+
+            LEAPFROG_PATCH=$(find patches \
+              -maxdepth 1 \
+              -type f \
+              -name '@yao-pkg+pkg-fetch+*.patch' \
+              -print \
+              | head -1)
+
+            if [ -z "${LEAPFROG_PATCH}" ]; then
+              echo "ERROR: patch-package did not generate a pkg-fetch patch"
+              exit 1
+            fi
+
+            cp \
+              "${LEAPFROG_PATCH}" \
+              "${GITHUB_WORKSPACE}/extra-patch-pkg-fetch_leapfrog.patch"
+
+            echo "PKG_FETCH_LEAPFROG=true" >> "$GITHUB_ENV"
+            echo "PKG_FETCH_BASELINE=head" >> "$GITHUB_ENV"
+
+            echo ""
+            echo "Generated leapfrog patch:"
+            echo "  ${GITHUB_WORKSPACE}/extra-patch-pkg-fetch_leapfrog.patch"
+          fi
+
+          # ------------------------------------------------------------
+          # Generate the FreeBSD-specific patch.
+          #
+          # The patch modifies the exact pkg-fetch Node patch, rather
+          # than pretending that FreeBSD patches are part of upstream
+          # pkg-fetch.
+          # ------------------------------------------------------------
+
+          BASELINE_PATCH="${GITHUB_WORKSPACE}/published-node-patch.cpp.patch"
+
+          if [ "${PKG_FETCH_BASELINE}" = "head" ]; then
+            BASELINE_PATCH="${{ github.workspace }}/pkg-fetch-head/patches/${TARGET_PATCH}"
+          fi
+
+          if [ ! -f "${BASELINE_PATCH}" ]; then
+            echo "ERROR: Baseline Node patch does not exist:"
+            echo "  ${BASELINE_PATCH}"
+            exit 1
+          fi
+
+          # Save the exact baseline patch currently represented by
+          # pkg-fetch before adding FreeBSD changes.
+          cp \
+            "${BASELINE_PATCH}" \
+            "${PKG_FETCH_DIR}/${TARGET_PATCH}.baseline"
+
+          # Rebuild the target patch from the exact pkg-fetch baseline.
+          cp \
+            "${BASELINE_PATCH}" \
+            "${TARGET_PATCH_PATH}"
+
+          # Append each FreeBSD Node patch to the pkg-fetch Node patch.
+          #
+          # pkg-fetch's Node patch uses paths rooted at "node/".
+          # FreeBSD's ports patches normally use paths relative to the
+          # Node source root, so normalize their file headers.
+          for patch_file in \
+            "${{ github.workspace }}"/patch-workspace/freebsd-patches/patch-*
+          do
             if [ -f "${patch_file}" ]; then
-              sed 's#^--- #--- node/#g; s#^+++ #+++ node/#g' "${patch_file}" >> \
-                "node.v${NODE_VER}.cpp.patch"
+              sed \
+                's#^--- #--- node/#g; s#^+++ #+++ node/#g' \
+                "${patch_file}" >> "${TARGET_PATCH_PATH}"
             fi
           done
 
-          cd "${{ github.workspace }}/patch-workspace"
-          npx patch-package "@yao-pkg/pkg-fetch"
-
-          cd patches
-          PATCH_FILE=$(ls @yao-pkg+pkg-fetch+*.patch 2>/dev/null | head -1)
-          UPSTREAM_URL="https://github.com/yao-pkg/pkg-fetch/raw/refs/tags/v${PKG_FETCH_VERSION}/patches/node.v${NODE_VER}.cpp.patch"
+          # Create a clean patch containing ONLY the FreeBSD additions.
+          #
+          # Do not use patch-package for this second patch: doing so would
+          # include the pkg-fetch leapfrog operation in the Node patch when
+          # a leapfrog is required. The two operations remain independent.
+          FREEBSD_PATCH_FILE="${GITHUB_WORKSPACE}/extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.cpp.patch"
 
           {
-            echo "${UPSTREAM_URL}"
+            echo "https://github.com/yao-pkg/pkg-fetch/raw/refs/heads/main/patches/${TARGET_PATCH}"
             echo "+ local FreeBSD patches"
-            grep -v '^diff --git\|^index ' "${PATCH_FILE}" | \
-              sed 's#^--- a/node_modules#--- yao-pkg/node_modules#g; s#^+++ b/node_modules#+++ yao-pkg/node_modules#g'
-          } > "${GITHUB_WORKSPACE}/extra-patch-pkg-fetch_patches_node.v${NODE_VER}.cpp.patch"
+            git diff \
+              --no-index \
+              --no-ext-diff \
+              --unified=3 \
+              -- \
+              "${BASELINE_PATCH}" \
+              "${TARGET_PATCH_PATH}" \
+              2>/dev/null || true
+          } > "${FREEBSD_PATCH_FILE}"
+
+          # The no-index diff above contains the absolute temporary paths.
+          # Replace those with the paths expected by the FreeBSD port.
+          sed -i \
+            -e "s#${BASELINE_PATCH}#--- yao-pkg/node_modules/@yao-pkg/pkg-fetch/patches/${TARGET_PATCH}#g" \
+            -e "s#${TARGET_PATCH_PATH}#+++ yao-pkg/node_modules/@yao-pkg/pkg-fetch/patches/${TARGET_PATCH}#g" \
+            "${FREEBSD_PATCH_FILE}"
+
+          # git diff --no-index emits "diff --git" and "index" records.
+          # They are unnecessary for the FreeBSD patch command and the
+          # existing cache patch format deliberately omits them.
+          sed -i \
+            '/^diff --git /d' \
+            "${FREEBSD_PATCH_FILE}"
+
+          sed -i \
+            '/^index [0-9a-f]\+\.\.[0-9a-f]\+ /d' \
+            "${FREEBSD_PATCH_FILE}"
+
+          if ! grep -q '^@@ ' "${FREEBSD_PATCH_FILE}"; then
+            echo "ERROR: FreeBSD patch generation produced no hunks"
+            exit 1
+          fi
+
+          echo ""
+          echo "Generated FreeBSD patch:"
+          echo "  ${FREEBSD_PATCH_FILE}"
+
+          # ------------------------------------------------------------
+          # Record metadata used by the cache.
+          # ------------------------------------------------------------
+
+          {
+            echo "DS_TAG=${DS_TAG}"
+            echo "FreeBSD ports commit=${FREEBSD_PORTS_SHA}"
+            echo "FreeBSD Node=${FREEBSD_NODE_VER}"
+            echo "@yao-pkg/pkg=${YAO_PKG_VER}"
+            echo "@yao-pkg/pkg-fetch=${PKG_FETCH_VER}"
+            echo "Published pkg-fetch Node=${PUBLISHED_NODE_VER}"
+            echo "pkg-fetch baseline=${PKG_FETCH_BASELINE}"
+            echo "pkg-fetch leapfrog=${PKG_FETCH_LEAPFROG:-false}"
+
+            if [ -n "${PKG_FETCH_HEAD_SHA:-}" ]; then
+              echo "pkg-fetch HEAD commit=${PKG_FETCH_HEAD_SHA}"
+            else
+              echo "pkg-fetch HEAD commit=not used"
+            fi
+          } > "${GITHUB_WORKSPACE}/pkg-fetch-build-info.txt"
+
+      # ================================================================
+      # VALIDATE PKG-FETCH PATCH ARTIFACTS
+      # ================================================================
+
+      - name: Validate pkg-fetch patch artifacts
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "VALIDATING PKG-FETCH PATCH ARTIFACTS"
+          echo "========================================"
+
+          TEST_ROOT="${{ github.workspace }}/pkg-fetch-patch-test"
+          rm -rf "${TEST_ROOT}"
+          mkdir -p "${TEST_ROOT}"
+
+          # Install a clean published @yao-pkg/pkg package into the test tree.
+          npm install \
+            --prefix "${TEST_ROOT}" \
+            --cache "${NPM_CACHE}" \
+            --ignore-scripts \
+            "@yao-pkg/pkg@${YAO_PKG_VER}"
+
+          # The leapfrog patch is optional.
+          if [ -f "${GITHUB_WORKSPACE}/extra-patch-pkg-fetch_leapfrog.patch" ]; then
+            echo "--- Testing leapfrog patch ---"
+
+            patch \
+              -p1 \
+              --dry-run \
+              -d "${TEST_ROOT}" \
+              < "${GITHUB_WORKSPACE}/extra-patch-pkg-fetch_leapfrog.patch"
+
+            patch \
+              -p1 \
+              -d "${TEST_ROOT}" \
+              < "${GITHUB_WORKSPACE}/extra-patch-pkg-fetch_leapfrog.patch"
+
+            TEST_PATCHES_JSON="${TEST_ROOT}/node_modules/@yao-pkg/pkg-fetch/patches/patches.json"
+            TEST_NODE_PATCH="${TEST_ROOT}/node_modules/@yao-pkg/pkg-fetch/patches/node.v${FREEBSD_NODE_VER}.cpp.patch"
+
+            if [ ! -f "${TEST_NODE_PATCH}" ]; then
+              echo "ERROR: Leapfrog patch did not install target Node patch"
+              exit 1
+            fi
+
+            node -e "
+              const p = require('${TEST_PATCHES_JSON}');
+              const key = 'v${FREEBSD_NODE_VER}';
+              const expected = 'node.v${FREEBSD_NODE_VER}.cpp.patch';
+
+              if (!p[key] || !p[key].includes(expected)) {
+                console.error('ERROR: Leapfrog patches.json validation failed');
+                process.exit(1);
+              }
+
+              console.log('Leapfrog patches.json validation passed');
+            "
+          else
+            echo "--- No leapfrog patch required ---"
+
+            TEST_NODE_PATCH="${TEST_ROOT}/node_modules/@yao-pkg/pkg-fetch/patches/node.v${FREEBSD_NODE_VER}.cpp.patch"
+
+            if [ ! -f "${TEST_NODE_PATCH}" ]; then
+              echo "ERROR: Published pkg-fetch does not contain target Node patch"
+              exit 1
+            fi
+          fi
+
+          # Apply the FreeBSD patch to the test package.
+          echo "--- Testing FreeBSD Node patch ---"
+
+          patch \
+            -p0 \
+            --dry-run \
+            -d "${TEST_ROOT}" \
+            < "${GITHUB_WORKSPACE}/extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.cpp.patch"
+
+          patch \
+            -p0 \
+            -d "${TEST_ROOT}" \
+            < "${GITHUB_WORKSPACE}/extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.cpp.patch"
+
+          FINAL_NODE_PATCH="${TEST_ROOT}/node_modules/@yao-pkg/pkg-fetch/patches/node.v${FREEBSD_NODE_VER}.cpp.patch"
+
+          if ! grep -q '^diff --git ' "${FINAL_NODE_PATCH}"; then
+            echo "ERROR: Final pkg-fetch Node patch does not appear to contain"
+            echo "       a valid unified diff"
+            exit 1
+          fi
+
+          echo "pkg-fetch patch artifact validation passed."
+
+          rm -rf "${TEST_ROOT}"
+
+      # ================================================================
+      # VALIDATE AGAINST EXACT NODE SOURCE
+      # ================================================================
+
+      - name: Validate combined Node patch against Node source
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "VALIDATING COMBINED NODE PATCH"
+          echo "========================================"
+
+          NODE_TARBALL="${RUNNER_TEMP}/node-v${FREEBSD_NODE_VER}.tar.gz"
+          NODE_SOURCE="${RUNNER_TEMP}/node-v${FREEBSD_NODE_VER}"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --output "${NODE_TARBALL}" \
+            "https://nodejs.org/dist/v${FREEBSD_NODE_VER}/node-v${FREEBSD_NODE_VER}.tar.gz"
+
+          rm -rf "${NODE_SOURCE}"
+
+          tar \
+            -xzf "${NODE_TARBALL}" \
+            -C "${RUNNER_TEMP}"
+
+          COMBINED_PATCH="${{ github.workspace }}/pkg-fetch-patch-test/node.v${FREEBSD_NODE_VER}.cpp.patch"
+
+          # Reconstruct the exact final patch from the clean pkg-fetch
+          # baseline plus the FreeBSD patch. This is equivalent to what
+          # the port will have after applying the two cache artifacts.
+          rm -rf "${{ github.workspace }}/pkg-fetch-patch-test"
+
+          mkdir -p "${{ github.workspace }}/pkg-fetch-patch-test"
+
+          if [ "${PKG_FETCH_BASELINE}" = "head" ]; then
+            cp \
+              "${{ github.workspace }}/pkg-fetch-head/patches/node.v${FREEBSD_NODE_VER}.cpp.patch" \
+              "${COMBINED_PATCH}"
+          else
+            cp \
+              "${GITHUB_WORKSPACE}/published-node-patch.cpp.patch" \
+              "${COMBINED_PATCH}"
+          fi
+
+          for patch_file in \
+            "${{ github.workspace }}"/patch-workspace/freebsd-patches/patch-*
+          do
+            if [ -f "${patch_file}" ]; then
+              sed \
+                's#^--- #--- node/#g; s#^+++ #+++ node/#g' \
+                "${patch_file}" >> "${COMBINED_PATCH}"
+            fi
+          done
+
+          echo "--- Dry-running combined pkg-fetch + FreeBSD patch ---"
+
+          patch \
+            -p0 \
+            --dry-run \
+            -d "${NODE_SOURCE}" \
+            < "${COMBINED_PATCH}"
+
+          echo "Combined Node patch applies cleanly to:"
+          echo "  Node ${FREEBSD_NODE_VER}"
+
+      # ================================================================
+      # SMOKE TEST OFFLINE CACHE
+      # ================================================================
 
       - name: Smoke test
         run: |
+          set -e
+
           echo "--- Smoke-testing cache offline ---"
 
           success=0
           failed=0
 
-          # 1-6: Production mode dirs (identical flags)
+          # 1-6: Production mode dirs
           for npm_dir in \
             src/sdkjs/build \
             src/server/Metrics \
@@ -572,9 +1331,19 @@ jobs:
             src/server/DocService
           do
             rm -rf "${npm_dir}/node_modules"
-            if NODE_ENV=production npm install --os freebsd --cpu x64 --offline \
-                --legacy-peer-deps --no-audit --no-fund \
-                --cache "${NPM_CACHE}" --ignore-scripts --prefix "${npm_dir}" >/dev/null 2>&1; then
+
+            if NODE_ENV=production npm install \
+                --os freebsd \
+                --cpu x64 \
+                --offline \
+                --legacy-peer-deps \
+                --no-audit \
+                --no-fund \
+                --cache "${NPM_CACHE}" \
+                --ignore-scripts \
+                --prefix "${npm_dir}" \
+                >/dev/null 2>&1
+            then
               success=$((success + 1))
             else
               echo "✗ FAILED: ${npm_dir#src/}"
@@ -582,40 +1351,71 @@ jobs:
             fi
           done
 
-          # 7. framework7-react (needs --include=dev)
+          # 7. framework7-react
           rm -rf src/web-apps/vendor/framework7-react/node_modules
-          if NODE_ENV=production npm install --os freebsd --cpu x64 --offline \
-              --legacy-peer-deps --no-audit --no-fund --cache "${NPM_CACHE}" \
-              --ignore-scripts --include=dev \
-              --prefix src/web-apps/vendor/framework7-react >/dev/null 2>&1; then
+
+          if NODE_ENV=production npm install \
+              --os freebsd \
+              --cpu x64 \
+              --offline \
+              --legacy-peer-deps \
+              --no-audit \
+              --no-fund \
+              --cache "${NPM_CACHE}" \
+              --ignore-scripts \
+              --include=dev \
+              --prefix src/web-apps/vendor/framework7-react \
+              >/dev/null 2>&1
+          then
             success=$((success + 1))
           else
             echo "✗ FAILED: framework7-react"
             failed=$((failed + 1))
           fi
 
-          # 8. document-server-integration (needs --omit=dev)
-          rm -rf src/document-server-integration/web/documentserver-example/nodejs/node_modules
-          if NODE_ENV=production npm install --os freebsd --cpu x64 --offline \
-              --legacy-peer-deps --no-audit --no-fund --cache "${NPM_CACHE}" \
-              --ignore-scripts --omit=dev \
-              --prefix src/document-server-integration/web/documentserver-example/nodejs >/dev/null 2>&1; then
+          # 8. document-server-integration
+          rm -rf \
+            src/document-server-integration/web/documentserver-example/nodejs/node_modules
+
+          if NODE_ENV=production npm install \
+              --os freebsd \
+              --cpu x64 \
+              --offline \
+              --legacy-peer-deps \
+              --no-audit \
+              --no-fund \
+              --cache "${NPM_CACHE}" \
+              --ignore-scripts \
+              --omit=dev \
+              --prefix src/document-server-integration/web/documentserver-example/nodejs \
+              >/dev/null 2>&1
+          then
             success=$((success + 1))
           else
             echo "✗ FAILED: document-server-integration"
             failed=$((failed + 1))
           fi
 
-          # 9-11: Full mode dirs, x64 (identical flags)
+          # 9-11: Full mode dirs, x64
           for npm_dir in \
             src/sdkjs \
             src/web-apps/build \
             src/document-server-package/common/documentserver/home/npm
           do
             rm -rf "${npm_dir}/node_modules"
-            if npm install --os freebsd --cpu x64 --offline \
-                --legacy-peer-deps --no-audit --no-fund \
-                --cache "${NPM_CACHE}" --ignore-scripts --prefix "${npm_dir}" >/dev/null 2>&1; then
+
+            if npm install \
+                --os freebsd \
+                --cpu x64 \
+                --offline \
+                --legacy-peer-deps \
+                --no-audit \
+                --no-fund \
+                --cache "${NPM_CACHE}" \
+                --ignore-scripts \
+                --prefix "${npm_dir}" \
+                >/dev/null 2>&1
+            then
               success=$((success + 1))
             else
               echo "✗ FAILED: ${npm_dir#src/}"
@@ -623,13 +1423,22 @@ jobs:
             fi
           done
 
-          # 12a-12b: yao-pkg (arch-specific)
+          # 12a-12b: yao-pkg
           for arch in arm64 x64; do
             rm -rf "src/yao-pkg-${arch}/node_modules"
-            if npm install --os freebsd --cpu "${arch}" --offline \
-                --legacy-peer-deps --no-audit --no-fund \
-                --cache "${NPM_CACHE}" --ignore-scripts \
-                --prefix "src/yao-pkg-${arch}" >/dev/null 2>&1; then
+
+            if npm install \
+                --os freebsd \
+                --cpu "${arch}" \
+                --offline \
+                --legacy-peer-deps \
+                --no-audit \
+                --no-fund \
+                --cache "${NPM_CACHE}" \
+                --ignore-scripts \
+                --prefix "src/yao-pkg-${arch}" \
+                >/dev/null 2>&1
+            then
               success=$((success + 1))
             else
               echo "✗ FAILED: yao-pkg-${arch}"
@@ -640,12 +1449,18 @@ jobs:
           echo ""
           echo "Smoke test results: ${success} passed, ${failed} failed"
 
-          if [ ${failed} -gt 0 ]; then
+          if [ "${failed}" -gt 0 ]; then
             exit 1
           fi
 
+      # ================================================================
+      # REPORT
+      # ================================================================
+
       - name: Report statistics
         run: |
+          set -e
+
           echo "========================================"
           echo "FINAL CACHE STATISTICS"
           echo "========================================"
@@ -666,102 +1481,212 @@ jobs:
           echo "Shrinkwrap files: ${shrinkwrap_count} + 2 yao-pkg = 13 total"
 
           echo ""
+          echo "Node synchronization:"
+          echo "  FreeBSD Node:           ${FREEBSD_NODE_VER}"
+          echo "  Published pkg-fetch:   ${PUBLISHED_NODE_VER}"
+          echo "  pkg-fetch version:      ${PKG_FETCH_VER}"
+          echo "  Leapfrog required:      ${PKG_FETCH_LEAPFROG:-false}"
+          echo "  FreeBSD ports commit:   ${FREEBSD_PORTS_SHA}"
+
+          if [ -n "${PKG_FETCH_HEAD_SHA:-}" ]; then
+            echo "  pkg-fetch HEAD commit:  ${PKG_FETCH_HEAD_SHA}"
+          fi
+
+          echo ""
           echo "Strategy: Minimal-packument with 13 shrinkwraps"
           echo "Flags used: --legacy-peer-deps --no-audit --no-fund"
           echo "Platform flags: --os freebsd --cpu x64 (or arm64)"
 
+      # ================================================================
+      # PREPARE RELEASE
+      # ================================================================
+
       - name: Set variables
         id: vars
         run: |
+          set -e
+
           TAG="${DS_TAG}"
           DATE="$(date +%Y%m%d%H%M)"
           RELEASE_TAG="${TAG}-${DATE}"
 
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Prep for release
         run: |
-          rm -rf "${NPM_CACHE}/_logs" "${NPM_CACHE}/_update-notifier-last-checked"
+          set -e
+
+          rm -rf \
+            "${NPM_CACHE}/_logs" \
+            "${NPM_CACHE}/_update-notifier-last-checked"
+
           cp -r src/shrinkwrap shrinkwrap
 
-      # ----------------------------
-      # Create tarball INCLUDING _cacache
-      # ----------------------------
+      # ================================================================
+      # CREATE RELEASE TARBALL
+      # ================================================================
+
       - name: Create release tarball
         run: |
+          set -e
+
           RELEASE_TAG="${{ steps.vars.outputs.release_tag }}"
           DIR_NAME="onlyoffice-DS-npm-cache-${RELEASE_TAG}"
           TAR_NAME="${DIR_NAME}.tar.gz"
 
-          # Create staging directory
-          mkdir "$DIR_NAME"
+          rm -rf "${DIR_NAME}"
+          mkdir "${DIR_NAME}"
 
-          # Copy everything into it (INCLUDING _cacache)
-          cp -a "${NPM_CACHE}/_cacache" "$DIR_NAME"/_cacache
-          cp -a extra-patch-pkg-fetch_patches_node.v*.patch "$DIR_NAME"/
-          cp -a sdkjs-package.json "$DIR_NAME"/
-          cp -a shrinkwrap "$DIR_NAME"/
-          cp -a yao-pkg-npm-shrinkwrap-*.json "$DIR_NAME"/
-          cp -a yao-pkg-package.json "$DIR_NAME"/
+          # npm cache
+          cp -a \
+            "${NPM_CACHE}/_cacache" \
+            "${DIR_NAME}/_cacache"
 
-          # Write build manifest (tarball-only, not committed to the repo)
+          # pkg-fetch patch artifacts
+          cp -a \
+            extra-patch-pkg-fetch_patches_node.v*.patch \
+            "${DIR_NAME}/"
+
+          if [ -f "extra-patch-pkg-fetch_leapfrog.patch" ]; then
+            cp -a \
+              extra-patch-pkg-fetch_leapfrog.patch \
+              "${DIR_NAME}/"
+          fi
+
+          # Dependency metadata
+          cp -a sdkjs-package.json \
+            "${DIR_NAME}/"
+
+          cp -a shrinkwrap \
+            "${DIR_NAME}/"
+
+          cp -a yao-pkg-npm-shrinkwrap-*.json \
+            "${DIR_NAME}/"
+
+          cp -a yao-pkg-package.json \
+            "${DIR_NAME}/"
+
+          # pkg-fetch synchronization metadata
+          cp -a pkg-fetch-build-info.txt \
+            "${DIR_NAME}/pkg-fetch-build-info.txt"
+
+          # Human-readable build manifest
           {
-            echo "Node:               ${{ env.NODE_VER }}"
-            echo "npm:                ${{ env.NPM_VER }}"
-            echo "@yao-pkg/pkg:       ${{ env.YAO_PKG_VER }}"
-            echo "@yao-pkg/pkg-fetch: ${{ env.PKG_FETCH_VER }}"
-          } > "$DIR_NAME/build-info.txt"
+            echo "DS tag:                    ${DS_TAG}"
+            echo "Node:                      ${FREEBSD_NODE_VER}"
+            echo "npm:                       ${NPM_VER}"
+            echo "@yao-pkg/pkg:              ${YAO_PKG_VER}"
+            echo "@yao-pkg/pkg-fetch:        ${PKG_FETCH_VER}"
+            echo "Published pkg-fetch Node:  ${PUBLISHED_NODE_VER}"
+            echo "FreeBSD ports commit:      ${FREEBSD_PORTS_SHA}"
+            echo "pkg-fetch leapfrog:         ${PKG_FETCH_LEAPFROG:-false}"
 
-          # Create tarball with stable ordering (important for distinfo)
-          tar --sort=name \
-              --mtime='UTC 2020-01-01' \
-              --owner=0 --group=0 --numeric-owner \
-              -czf "$TAR_NAME" "$DIR_NAME"
+            if [ -n "${PKG_FETCH_HEAD_SHA:-}" ]; then
+              echo "pkg-fetch HEAD commit:     ${PKG_FETCH_HEAD_SHA}"
+            fi
+          } > "${DIR_NAME}/build-info.txt"
 
-          echo "TAR_NAME=$TAR_NAME" >> $GITHUB_ENV
+          # Stable ordering is important for reproducible distinfo.
+          tar \
+            --sort=name \
+            --mtime='UTC 2020-01-01' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -czf "${TAR_NAME}" \
+            "${DIR_NAME}"
 
-      # ----------------------------
-      # Commit metadata files only
-      # ----------------------------
+          echo "TAR_NAME=${TAR_NAME}" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "Created:"
+          echo "  ${TAR_NAME}"
+
+      # ================================================================
+      # CLEAN UP WORKING ARTIFACTS BEFORE COMMIT
+      # ================================================================
+
+      - name: Clean up artifacts
+        run: |
+          set -e
+
+          echo "--- Cleaning up temporary artifacts ---"
+
+          rm -rf \
+            _cacache \
+            shrinkwrap \
+            *.cpp.patch \
+            yao-pkg-*.json \
+            sdkjs-package.json \
+            pkg-fetch-build-info.txt \
+            published-node-patch.cpp.patch
+
+          rm -f \
+            extra-patch-pkg-fetch_leapfrog.patch \
+            extra-patch-pkg-fetch_patches_node.v*.cpp.patch
+
+      # ================================================================
+      # COMMIT METADATA FILES ONLY
+      # ================================================================
+
       - name: Commit metadata
         run: |
+          set -e
+
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
           git add \
-            extra-patch-pkg-fetch_patches_node.v*.patch \
+            extra-patch-pkg-fetch*.patch \
             sdkjs-package.json \
             shrinkwrap \
             yao-pkg-npm-shrinkwrap-*.json \
             yao-pkg-package.json
 
-          git commit -m "Update npm cache metadata for ${{ steps.vars.outputs.release_tag }}" || echo "No changes"
+          git commit \
+            -m "Update npm cache metadata for ${{ steps.vars.outputs.release_tag }}" \
+            || echo "No changes"
 
+      # ================================================================
+      # CREATE TAG FOR BOTH COMMIT + RELEASE
+      # ================================================================
 
-      # ----------------------------
-      # Create tag for BOTH commit + release
-      # ----------------------------
       - name: Create tag
         run: |
-          git push origin HEAD:${{ github.ref_name }}
+          set -e
+
+          git push origin "HEAD:${{ github.ref_name }}"
+
           git tag "${{ steps.vars.outputs.release_tag }}"
+
           git push origin "${{ steps.vars.outputs.release_tag }}"
 
-      # ----------------------------
-      # Create GitHub Release + upload tarball
-      # ----------------------------
+      # ================================================================
+      # CREATE GITHUB RELEASE + UPLOAD TARBALL
+      # ================================================================
+
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.vars.outputs.release_tag }}" \
+          set -e
+
+          gh release create \
+            "${{ steps.vars.outputs.release_tag }}" \
             "$TAR_NAME" \
             --title "NPM Cache ${{ steps.vars.outputs.release_tag }}" \
             --notes "Offline npm cache for OnlyOffice DocumentServer
 
           ## Build Metadata
-          - Node:               ${{ env.NODE_VER }}
-          - npm:                ${{ env.NPM_VER }}
-          - @yao-pkg/pkg:       ${{ env.YAO_PKG_VER }}
-          - @yao-pkg/pkg-fetch: ${{ env.PKG_FETCH_VER }}"
+
+          - DS tag: ${{ env.DS_TAG }}
+          - Node: ${{ env.FREEBSD_NODE_VER }}
+          - npm: ${{ env.NPM_VER }}
+          - @yao-pkg/pkg: ${{ env.YAO_PKG_VER }}
+          - @yao-pkg/pkg-fetch: ${{ env.PKG_FETCH_VER }}
+          - Published pkg-fetch Node: ${{ env.PUBLISHED_NODE_VER }}
+          - FreeBSD ports commit: ${{ env.FREEBSD_PORTS_SHA }}
+          - pkg-fetch leapfrog: ${{ env.PKG_FETCH_LEAPFROG }}"
+
+          echo "Release created successfully."
