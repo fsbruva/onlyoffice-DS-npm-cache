@@ -711,7 +711,8 @@ jobs:
 
           rm -rf patches
 
-          npx patch-package "@yao-pkg/pkg-fetch"
+          echo "--- Running patch-package ---"
+          npm_config_allow_remote=all npx patch-package "@yao-pkg/pkg-fetch"
 
           PATCH_FILE=$(
             find patches \
