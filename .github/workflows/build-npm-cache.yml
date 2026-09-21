@@ -18,26 +18,63 @@
 # KEY: Building on Linux for FreeBSD requires --os freebsd flag
 # KEY: Building on x64 for FreeBSD requires --cpu x64 flag
 #
-# Package-lock files are captured using their source-relative paths:
+# Any pre-existing package-lock.json / npm-shrinkwrap.json shipped upstream
+# is removed from every target directory BEFORE Phase 1 runs, so Phase 1
+# always generates a fresh lockfile rather than trusting whatever npm
+# lockfile version upstream happened to commit.
 #
-#   package-locks/<source-relative-directory>/package-lock.json
-#   package-locks/<source-relative-directory>/package.json
+# ORDINARY directories mirror the source layout under one tree:
 #
-# The package.json files are captured alongside every package-lock because
-# npm 12 records the allowScripts policy inside package.json. Any directory
-# that gains an approval MUST ship its package.json with its lock file.
+#   package-locks/<source-relative-directory>/package-lock.json   (always)
+#   package-locks/<source-relative-directory>/package.json        (only if modified)
 #
-# The root-level *-package.json / yao-pkg-npm-package-lock-*.json names are
-# retained because the FreeBSD port consumes those paths directly.
+# yao-pkg is the deliberate exception. It has two independent,
+# architecture-specific dependency trees rather than a source-relative
+# path, so it is captured as four flat, arch-suffixed files at the
+# repository root instead of being nested inside package-locks/:
+#
+#   yao-pkg-package-aarch64.json
+#   yao-pkg-package-amd64.json
+#   yao-pkg-npm-package-lock-aarch64.json
+#   yao-pkg-npm-package-lock-amd64.json
+#
+# This lets the port's Makefile treat package-locks/ with one generic
+# recursive copy (or find-loop) that never needs to know yao-pkg exists,
+# while yao-pkg keeps its own small, explicit, arch-selected copy step —
+# the same shape the port already used for shrinkwraps.
+#
+# package.json IS captured (and therefore overwrites the upstream file when
+# the port applies package-locks/) for exactly three reasons, unioned:
+#
+#   1. It was patched inline by this workflow (the `patches/patch-*` files
+#      applied via `patch -p0`).
+#   2. It was created from scratch by this workflow because upstream ships
+#      none (sdkjs's synthetic build-deps package.json). sdkjs is captured
+#      through the generic package-locks/sdkjs/ path like any other
+#      modified directory — there is no special-cased root file for it.
+#   3. It carries an npm 12 allowScripts approval (anything in
+#      npm-allow-scripts.txt / the APPROVE_MAP).
+#
+# package.json is NOT captured for directories outside that union (e.g.
+# sdkjs/build, framework7-react, server/FileConverter,
+# document-server-package/.../npm, document-server-integration/.../nodejs)
+# — those installs use upstream's package.json completely unmodified, so
+# there is nothing to overwrite and no reason to ship a redundant copy.
+# Presence of package.json in package-locks/<dir>/ is therefore the signal
+# the port's Makefile uses to decide whether to overwrite: if it's there,
+# copy it over the source tree; if not, leave upstream's file alone.
+# yao-pkg's package.json is always captured unconditionally (it is always
+# both created from scratch and always carries an approval).
 #
 # LIFECYCLE SCRIPT POLICY:
 #
 #   Every one of the 13 target directories is audited with
 #   `npm approve-scripts --allow-scripts-pending`. Approvals are declared in
-#   ONE table (APPROVE_MAP below). After approval, the audit is re-run over
-#   all 13 directories and the build FAILS if anything is still pending.
-#   This makes a new or moved install script a hard build error rather than
-#   a silent behaviour change in the jail.
+#   ONE table (APPROVE_MAP below, written out to npm-allow-scripts.txt).
+#   After approval, the audit is re-run over all 13 directories and the
+#   build FAILS if anything is still pending. This makes a new or moved
+#   install script a hard build error rather than a silent behaviour change
+#   in the jail.
 #
 # PKG-FETCH NODE VERSION HANDLING:
 #
@@ -128,7 +165,7 @@ jobs:
       # Bootstrap with any Node in the requested major so we have npm
       # available to install @yao-pkg/pkg and inspect its dependency tree.
       - name: Bootstrap Node.js ${{ env.NODE_MAJOR }}.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_MAJOR }}.x
 
@@ -137,7 +174,7 @@ jobs:
       # ================================================================
 
       - name: Checkout cache repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
@@ -304,7 +341,7 @@ jobs:
       # used by the FreeBSD port, not necessarily the Node version currently
       # published by pkg-fetch.
       - name: Install Node.js ${{ env.FREEBSD_NODE_VER }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ env.FREEBSD_NODE_VER }}
 
@@ -904,6 +941,72 @@ jobs:
       # PHASE 1: GENERATE PACKAGE-LOCK FILES
       # ================================================================
 
+      # ================================================================
+      # REMOVE UPSTREAM LOCKFILES BEFORE PHASE 1
+      #
+      # Every directory that will be freshly locked in Phase 1 may still
+      # carry whatever package-lock.json (any lockfile version) or
+      # npm-shrinkwrap.json upstream happened to commit. Clearing both
+      # before Phase 1 runs guarantees npm always generates a brand new
+      # lockfile-version-3 file from the (possibly patched) package.json,
+      # rather than trusting or merging against an upstream lockfile.
+      #
+      # This only covers directories that exist immediately after clone.
+      # sdkjs/package.json is overwritten by this workflow before Phase 1
+      # full-mode install (9), but the sdkjs directory itself is already
+      # on disk here, so any lockfile shipped alongside the real sdkjs
+      # package.json is cleared too. yao-pkg-arm64 / yao-pkg-x64 do not
+      # exist yet at this point — they are created from scratch later in
+      # Phase 1 and therefore can never carry an upstream lockfile.
+      # ================================================================
+
+      - name: Remove upstream package-lock.json / npm-shrinkwrap.json
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "REMOVING UPSTREAM LOCKFILES BEFORE PHASE 1"
+          echo "========================================"
+
+          for rel_path in \
+            sdkjs/build \
+            web-apps/vendor/framework7-react \
+            server/Metrics \
+            server/FileConverter \
+            server/Common \
+            server \
+            server/DocService \
+            sdkjs \
+            web-apps/build \
+            document-server-package/common/documentserver/home/npm \
+            document-server-integration/web/documentserver-example/nodejs
+          do
+
+            dir="src/${rel_path}"
+
+            if [ ! -d "${dir}" ]; then
+              echo "ERROR: Expected source directory does not exist: ${dir}"
+              exit 1
+            fi
+
+            removed=""
+
+            for f in package-lock.json npm-shrinkwrap.json; do
+              if [ -f "${dir}/${f}" ]; then
+                rm -f "${dir}/${f}"
+                removed="${removed} ${f}"
+              fi
+            done
+
+            if [ -n "${removed}" ]; then
+              echo "  ${rel_path}:${removed}"
+            fi
+
+          done
+
+          echo
+          echo "Upstream lockfiles cleared."
+
       - name: Phase 1 - Production mode installations (1-5)
         run: |
           set -e
@@ -937,12 +1040,8 @@ jobs:
             --include=dev \
             --prefix src/web-apps/vendor/framework7-react
 
-          # 3. server/Metrics
+          # 3. server/Metrics (upstream lockfile already cleared above)
           echo "3. server/Metrics (production mode, patched)..."
-
-          rm -f \
-            src/server/Metrics/package-lock.json \
-            src/server/Metrics/npm-shrinkwrap.json
 
           patch -p0 -d src < patches/patch-server_Metrics_package.json
 
@@ -971,12 +1070,8 @@ jobs:
         run: |
           set -e
 
-          # 6. server
+          # 6. server (upstream lockfile already cleared above)
           echo "6. server (production mode, patched)..."
-
-          rm -f \
-            src/server/package-lock.json \
-            src/server/npm-shrinkwrap.json
 
           patch -p0 -d src < patches/patch-server_package.json
 
@@ -988,12 +1083,8 @@ jobs:
             --ignore-scripts \
             --prefix src/server
 
-          # 7. server/DocService
+          # 7. server/DocService (upstream lockfile already cleared above)
           echo "7. server/DocService (production mode, patched)..."
-
-          rm -f \
-            src/server/DocService/package-lock.json \
-            src/server/DocService/npm-shrinkwrap.json
 
           patch -p0 -d src < patches/patch-server_DocService_package.json
 
@@ -1325,34 +1416,59 @@ jobs:
           rm -rf package-locks
           mkdir -p package-locks
 
-          # Ordinary package-lock files are captured according to their
-          # source-relative directory:
-          #
-          #   package-locks/<source-relative-directory>/package-lock.json
-          #   package-locks/<source-relative-directory>/package.json   (if present)
-          #
-          # package.json is captured alongside its lock file ONLY where it
-          # matters: npm 12 stores the allowScripts policy in package.json,
-          # so any directory with an approve-scripts entry (recorded in
-          # npm-allow-scripts.txt by the audit step earlier in this job)
-          # MUST ship its package.json, or the approval is lost.
-          #
-          # Directories with no approval entry may or may not have their
-          # own package.json in the source tree (e.g. sdkjs/build ships
-          # none in this DS tag). For those, package.json is copied on a
-          # best-effort basis and its absence is not an error.
-          #
-          # The Yao pkg projects are the exception. They have separate
-          # architecture-specific dependency trees and retain the existing
-          # root-level naming convention used by the FreeBSD port.
-
           APPROVE_MAP="${GITHUB_WORKSPACE}/npm-allow-scripts.txt"
 
-          requires_package_json() {
-            # $1: source-relative directory, e.g. "server/Common"
-            [ -f "${APPROVE_MAP}" ] || return 1
-            grep -qE "^src/${1}[[:space:]]" "${APPROVE_MAP}"
+          # ------------------------------------------------------------
+          # Directories whose package.json this workflow itself modified,
+          # by one of three distinct mechanisms. package.json is captured
+          # (and therefore overwrites upstream when the port applies
+          # package-locks/) ONLY for directories in this union:
+          #
+          #   1. Patched inline via `patch -p0` against patches/patch-*.
+          #   2. Created from scratch because upstream ships none.
+          #   3. Carries an npm12 allowScripts approval (from the audit
+          #      step's npm-allow-scripts.txt) — the approval lives
+          #      inside package.json, so it is lost if not captured.
+          #
+          # yao-pkg-arm64 / yao-pkg-x64 are excluded from this generic
+          # list and handled in their own block below: both are always
+          # created from scratch AND always carry an approval, so their
+          # package.json is unconditionally captured either way.
+          # ------------------------------------------------------------
+
+          PATCHED_RELS="server server/DocService server/Metrics web-apps/build"
+          CREATED_RELS="sdkjs"
+
+          APPROVED_RELS=""
+          if [ -f "${APPROVE_MAP}" ]; then
+            APPROVED_RELS=$(
+              awk '
+                /^[[:space:]]*($|#)/ { next }
+                { sub(/^src\//, "", $1); print $1 }
+              ' "${APPROVE_MAP}" |
+              grep -v '^yao-pkg-' || true
+            )
+          fi
+
+          MODIFIED_RELS=$(
+            printf '%s\n%s\n%s\n' "${PATCHED_RELS}" "${CREATED_RELS}" "${APPROVED_RELS}" |
+            tr ' ' '\n' |
+            sed '/^$/d' |
+            sort -u
+          )
+
+          echo "Directories whose package.json will be captured (patched, created, or approved):"
+          printf '%s\n' "${MODIFIED_RELS}" | sed 's/^/  /'
+          echo
+
+          is_modified() {
+            printf '%s\n' "${MODIFIED_RELS}" | grep -qxF "$1"
           }
+
+          # ------------------------------------------------------------
+          # Ordinary directories: package-lock.json always, package.json
+          # only when the directory is in MODIFIED_RELS above.
+          # ------------------------------------------------------------
 
           for rel_path in \
             sdkjs/build \
@@ -1382,66 +1498,67 @@ jobs:
             cp "${source_lock}" "${target_dir}/package-lock.json"
             echo "  ${target_dir}/package-lock.json"
 
-            if [ -f "${source_pkg}" ]; then
+            if is_modified "${rel_path}"; then
+              if [ ! -f "${source_pkg}" ]; then
+                echo "ERROR: ${rel_path} is patched/created/approved but has no package.json:"
+                echo "  ${source_pkg}"
+                exit 1
+              fi
               cp "${source_pkg}" "${target_dir}/package.json"
               echo "  ${target_dir}/package.json"
-            elif requires_package_json "${rel_path}"; then
-              echo "ERROR: ${rel_path} has an approve-scripts entry but no package.json:"
-              echo "  ${source_pkg}"
-              echo "  (the allowScripts approval recorded there would be lost)"
-              exit 1
             else
-              echo "  ${target_dir}/package.json: not present in source, skipping (no approval entry for this dir)"
+              echo "  ${target_dir}/package.json: skipped (unmodified upstream file)"
             fi
 
           done
 
+          # ------------------------------------------------------------
+          # yao-pkg: architecture-specific dependency trees. Always
+          # created from scratch and always carries an approval, so
+          # package-lock.json AND package.json are always captured.
+          #
+          # Deliberately NOT nested under package-locks/: yao-pkg has no
+          # source-relative directory of its own (it's synthetic), and
+          # keeping it as flat, arch-suffixed root files lets the port's
+          # Makefile do one generic recursive copy over package-locks/
+          # without needing to special-case yao-pkg there. Arch selection
+          # for yao-pkg stays a small, explicit step in the port, using
+          # FreeBSD's MACHINE_ARCH naming (aarch64 / amd64) directly —
+          # the same shape the port already used for shrinkwraps.
+          # ------------------------------------------------------------
+
           echo
-          echo "Capturing architecture-specific Yao package-lock files..."
+          echo "Capturing architecture-specific yao-pkg files (root-level)..."
 
-          # The FreeBSD port selects one of these files using MACHINE_ARCH.
-          # Preserve that interface while transitioning from npm-shrinkwrap
-          # to package-lock.json.
+          for pair in arm64:aarch64 x64:amd64; do
 
-          for arch in arm64 x64; do
-            if [ ! -f "src/yao-pkg-${arch}/package-lock.json" ]; then
-              echo "ERROR: Missing Yao ${arch} package-lock:"
-              echo "  src/yao-pkg-${arch}/package-lock.json"
+            npm_arch="${pair%%:*}"
+            freebsd_arch="${pair##*:}"
+
+            source_dir="src/yao-pkg-${npm_arch}"
+
+            if [ ! -f "${source_dir}/package-lock.json" ]; then
+              echo "ERROR: Missing yao-pkg ${npm_arch} package-lock:"
+              echo "  ${source_dir}/package-lock.json"
               exit 1
             fi
+
+            if [ ! -f "${source_dir}/package.json" ]; then
+              echo "ERROR: Missing yao-pkg ${npm_arch} package.json:"
+              echo "  ${source_dir}/package.json"
+              exit 1
+            fi
+
+            cp "${source_dir}/package.json"       "yao-pkg-package-${freebsd_arch}.json"
+            cp "${source_dir}/package-lock.json"   "yao-pkg-npm-package-lock-${freebsd_arch}.json"
+
+            echo "  yao-pkg-package-${freebsd_arch}.json"
+            echo "  yao-pkg-npm-package-lock-${freebsd_arch}.json"
+
           done
 
-          cp \
-            src/yao-pkg-arm64/package-lock.json \
-            yao-pkg-npm-package-lock-aarch64.json
-
-          cp \
-            src/yao-pkg-x64/package-lock.json \
-            yao-pkg-npm-package-lock-amd64.json
-
-          echo "  yao-pkg-npm-package-lock-aarch64.json"
-          echo "  yao-pkg-npm-package-lock-amd64.json"
-
           echo
-          echo "Capturing root-level package.json files consumed by the port..."
-
-          # Generated by this workflow.
-          cp src/sdkjs/package.json          sdkjs-package.json
-
-          # yao-pkg-arm64 and yao-pkg-x64 share dependencies but each holds
-          # its own allowScripts approval, so both are captured.
-          cp src/yao-pkg-arm64/package.json  yao-pkg-package-aarch64.json
-          cp src/yao-pkg-x64/package.json    yao-pkg-package-amd64.json
-
-          # These package.json files contain npm12 allowScripts approvals
-          # and therefore must accompany their package-lock files.
-          cp src/server/Common/package.json      server-Common-package.json
-          cp src/server/DocService/package.json  server-DocService-package.json
-          cp src/server/Metrics/package.json     server-Metrics-package.json
-          cp src/web-apps/build/package.json     web-apps-build-package.json
-
-          echo
-          echo "Package-lock inventory:"
+          echo "Package-lock inventory (package-locks/ tree):"
           find package-locks \
             -type f \
             -name package-lock.json |
@@ -1456,13 +1573,21 @@ jobs:
 
           if [ "${lock_count}" -ne 11 ]; then
             echo
-            echo "ERROR: Expected 11 ordinary package-lock files, found ${lock_count}."
+            echo "ERROR: Expected 11 ordinary package-lock files under package-locks/, found ${lock_count}."
             exit 1
           fi
 
+          pkgjson_count=$(
+            find package-locks \
+              -type f \
+              -name package.json |
+            wc -l
+          )
+
           echo
-          echo "Captured ${lock_count} ordinary package-lock files."
-          echo "Captured 2 architecture-specific Yao package-lock files."
+          echo "Captured ${lock_count} package-lock.json files under package-locks/."
+          echo "Captured ${pkgjson_count} package.json files under package-locks/ (patched, created, or approved directories only)."
+          echo "Captured 2 architecture-specific yao-pkg package-lock.json + 2 yao-pkg package.json files at the repo root."
 
       # ================================================================
       # PHASE 2: REBUILD CACHE
@@ -1800,7 +1925,20 @@ jobs:
             wc -l
           )
 
-          echo "Package-lock files: ${package_lock_count} + 2 yao-pkg = 13 total"
+          package_json_count=$(
+            find package-locks \
+              -name package.json |
+            wc -l
+          )
+
+          yao_root_count=$(
+            ls -1 yao-pkg-package-*.json yao-pkg-npm-package-lock-*.json 2>/dev/null |
+            wc -l
+          )
+
+          echo "Package-lock files under package-locks/: ${package_lock_count} (ordinary, source-relative directories)"
+          echo "Captured package.json files under package-locks/: ${package_json_count} (patched, created, or approved directories only)"
+          echo "yao-pkg root-level files: ${yao_root_count} (expect 4: package.json + package-lock.json, x2 arches)"
 
           echo
           echo "Node versions:"
@@ -1897,6 +2035,38 @@ jobs:
             yao-pkg-npm-shrinkwrap-amd64.json || true
 
           # ------------------------------------------------------------
+          # 2b. Obsolete scattered root-level package.json /
+          #     package-lock.json files from the previous (pre-unified)
+          #     revision of this workflow. Everything now lives under
+          #     package-locks/, including yao-pkg (aarch64/amd64).
+          # ------------------------------------------------------------
+
+          echo
+          echo "--- Obsolete scattered package.json / package-lock.json files ---"
+
+          OBSOLETE_ROOT_FILES="
+          yao-pkg-package.json
+          sdkjs-package.json
+          server-Common-package.json
+          server-DocService-package.json
+          server-Metrics-package.json
+          web-apps-build-package.json
+          "
+          # NOTE: yao-pkg-package-aarch64.json, yao-pkg-package-amd64.json,
+          # yao-pkg-npm-package-lock-aarch64.json, and
+          # yao-pkg-npm-package-lock-amd64.json are CURRENT files, captured
+          # earlier in this same job — do NOT add them here, or this step
+          # deletes them again before the tarball/commit steps ever see them.
+
+          for f in ${OBSOLETE_ROOT_FILES}; do
+            if [ -f "${f}" ]; then
+              echo "  removing: ${f}"
+              rm -f "${f}"
+            fi
+            git rm --quiet --ignore-unmatch "${f}" || true
+          done
+
+          # ------------------------------------------------------------
           # 3. Stray cache directory accidentally committed by old runs
           # ------------------------------------------------------------
 
@@ -1960,20 +2130,17 @@ jobs:
             "extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.patch" \
             "${DIR_NAME}/"
 
-          # package-lock.json + package.json trees.
+          # package-lock.json + package.json trees for the ordinary
+          # (source-relative) directories.
           cp -a package-locks "${DIR_NAME}/"
 
-          # Root-level files consumed directly by the FreeBSD port.
+          # yao-pkg: flat, arch-suffixed root-level files (deliberately
+          # NOT part of package-locks/ — see header comment).
           cp -a \
-            yao-pkg-npm-package-lock-aarch64.json \
-            yao-pkg-npm-package-lock-amd64.json \
             yao-pkg-package-aarch64.json \
             yao-pkg-package-amd64.json \
-            sdkjs-package.json \
-            server-Common-package.json \
-            server-DocService-package.json \
-            server-Metrics-package.json \
-            web-apps-build-package.json \
+            yao-pkg-npm-package-lock-aarch64.json \
+            yao-pkg-npm-package-lock-amd64.json \
             "${DIR_NAME}/"
 
           # The lifecycle-script approval table, for auditability.
@@ -2034,15 +2201,10 @@ jobs:
             "extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.patch" \
             package-locks \
             npm-allow-scripts.txt \
-            yao-pkg-npm-package-lock-aarch64.json \
-            yao-pkg-npm-package-lock-amd64.json \
             yao-pkg-package-aarch64.json \
             yao-pkg-package-amd64.json \
-            sdkjs-package.json \
-            server-Common-package.json \
-            server-DocService-package.json \
-            server-Metrics-package.json \
-            web-apps-build-package.json
+            yao-pkg-npm-package-lock-aarch64.json \
+            yao-pkg-npm-package-lock-amd64.json
 
           # Pick up deletions performed by the cleanout step.
           git add -u
@@ -2149,7 +2311,7 @@ jobs:
 
       - name: Upload tarball as workflow artifact (no-release runs)
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.publish_release != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: onlyoffice-DS-npm-cache-${{ steps.vars.outputs.release_tag }}
           path: ${{ env.TAR_NAME }}
