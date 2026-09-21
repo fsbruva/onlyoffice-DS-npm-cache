@@ -1,0 +1,6 @@
+src/server/Common        win-ca
+src/server/DocService    oracledb sharp
+src/server/Metrics       modern-syslog
+src/web-apps/build       gifsicle jpegtran-bin optipng-bin
+src/yao-pkg-arm64        esbuild
+src/yao-pkg-x64          esbuild
