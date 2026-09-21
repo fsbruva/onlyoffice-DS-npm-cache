@@ -1,9 +1,13 @@
 # .github/workflows/build-npm-cache.yml
 #
-# TWO-PHASE CACHE BUILD - MINIMAL PACKUMENTS STRATEGY
+# DEVELOPMENT/TRANSITION CACHE BUILD - MINIMAL PACKUMENTS STRATEGY
 #
-# Phase 1: Generate/update shrinkwraps (temporary cache, then deleted)
-# Phase 2: Rebuild cache using updated shrinkwraps (tarballs only)
+# Phase 1: Generate package-lock.json files and approve required lifecycle scripts
+# Phase 2: Rebuild the npm cache using the generated package-lock.json files
+#
+# This workflow intentionally does NOT create a release, tag, or tarball.
+# It commits the generated package-lock.json files and associated package.json
+# metadata directly to the repository.
 #
 # KEY: Match NODE_ENV and flags used by actual build scripts
 # KEY: Use THREE flags in Phase 2 to prevent MOST packument fetching:
@@ -13,9 +17,13 @@
 # KEY: Building on Linux for FreeBSD requires --os freebsd flag
 # KEY: Building on x64 for FreeBSD requires --cpu x64 flag
 #
-# Shrinkwrap files (13 dirs - tarballs only, minimal packuments):
-#   Production mode: 8 directories (Metrics, DocService patched)
-#   Full mode: 5 directories (including 2 arch-specific yao-pkg)
+# Package-lock files are captured using their source-relative paths:
+#
+#   package-locks/<source-relative-directory>/package-lock.json
+#
+# The captured package.json files are also committed where they contain
+# generated/approved metadata required by the FreeBSD npm12 consumer,
+# particularly the npm12 allowScripts policy.
 #
 # PKG-FETCH NODE VERSION HANDLING:
 #
@@ -40,7 +48,7 @@
 # The pkg-fetch HEAD SHA is recorded in build-info.txt so the generated cache
 # can always be traced back to the exact upstream pkg-fetch source used.
 
-name: Build npm Cache (Minimal Packuments)
+name: Build npm Cache (Development/Transition)
 
 on:
   workflow_dispatch:
@@ -65,10 +73,6 @@ on:
         description: '@yao-pkg/pkg version (e.g. 6.22.0)'
         required: true
         default: '6.22.0'
-
-  push:
-    tags:
-      - "v*"
 
 env:
   DS_TAG:      "v${{ github.event.inputs.ds_version }}.${{ github.event.inputs.ds_build }}"
@@ -858,10 +862,10 @@ jobs:
             < "${TARGET_PATCH}"
 
           echo
-          echo "✓ Final pkg-fetch patch applies cleanly to Node ${FREEBSD_NODE_VER}."
+          echo "Final pkg-fetch patch applies cleanly to Node ${FREEBSD_NODE_VER}."
 
       # ================================================================
-      # PHASE 1: GENERATE/UPDATE SHRINKWRAPS
+      # PHASE 1: GENERATE PACKAGE-LOCK FILES
       # ================================================================
 
       - name: Phase 1 - Production mode installations (1-5)
@@ -869,7 +873,7 @@ jobs:
           set -e
 
           echo "========================================"
-          echo "PHASE 1: GENERATE/UPDATE SHRINKWRAPS"
+          echo "PHASE 1: GENERATE PACKAGE-LOCK FILES"
           echo "========================================"
 
           mkdir -p "${TEMP_CACHE}"
@@ -886,10 +890,6 @@ jobs:
             --ignore-scripts \
             --prefix src/sdkjs/build
 
-          mv \
-            src/sdkjs/build/package-lock.json \
-            src/sdkjs/build/npm-shrinkwrap.json
-
           # 2. framework7-react
           echo "2. framework7-react (production mode + --include=dev)..."
           NODE_ENV=production npm install \
@@ -901,15 +901,10 @@ jobs:
             --include=dev \
             --prefix src/web-apps/vendor/framework7-react
 
-          mv \
-            src/web-apps/vendor/framework7-react/package-lock.json \
-            src/web-apps/vendor/framework7-react/npm-shrinkwrap.json
-
           # 3. server/Metrics
           echo "3. server/Metrics (production mode, patched)..."
 
           rm -f \
-            src/server/Metrics/npm-shrinkwrap.json \
             src/server/Metrics/package-lock.json
 
           patch -p0 -d src < patches/patch-server_Metrics_package.json
@@ -922,10 +917,6 @@ jobs:
             --ignore-scripts \
             --prefix src/server/Metrics
 
-          mv \
-            src/server/Metrics/package-lock.json \
-            src/server/Metrics/npm-shrinkwrap.json
-
           # 4-5. server/FileConverter, server/Common
           for subdir in FileConverter Common; do
             echo "server/${subdir} (production mode)..."
@@ -937,10 +928,6 @@ jobs:
               --lockfile-version 3 \
               --ignore-scripts \
               --prefix "src/server/${subdir}"
-
-            mv \
-              "src/server/${subdir}/package-lock.json" \
-              "src/server/${subdir}/npm-shrinkwrap.json"
           done
 
       - name: Phase 1 - Production mode installations (6-8)
@@ -951,7 +938,6 @@ jobs:
           echo "6. server (production mode, patched)..."
 
           rm -f \
-            src/server/npm-shrinkwrap.json \
             src/server/package-lock.json
 
           patch -p0 -d src < patches/patch-server_package.json
@@ -964,15 +950,10 @@ jobs:
             --ignore-scripts \
             --prefix src/server
 
-          mv \
-            src/server/package-lock.json \
-            src/server/npm-shrinkwrap.json
-
           # 7. server/DocService
           echo "7. server/DocService (production mode, patched)..."
 
           rm -f \
-            src/server/DocService/npm-shrinkwrap.json \
             src/server/DocService/package-lock.json
 
           patch -p0 -d src < patches/patch-server_DocService_package.json
@@ -985,10 +966,6 @@ jobs:
             --ignore-scripts \
             --prefix src/server/DocService
 
-          mv \
-            src/server/DocService/package-lock.json \
-            src/server/DocService/npm-shrinkwrap.json
-
           # 8. document-server-integration
           echo "8. document-server-integration (production mode, --omit=dev)..."
 
@@ -1000,10 +977,6 @@ jobs:
             --ignore-scripts \
             --omit=dev \
             --prefix src/document-server-integration/web/documentserver-example/nodejs
-
-          mv \
-            src/document-server-integration/web/documentserver-example/nodejs/package-lock.json \
-            src/document-server-integration/web/documentserver-example/nodejs/npm-shrinkwrap.json
 
       - name: Phase 1 - Full mode installations (9-11)
         run: |
@@ -1034,10 +1007,6 @@ jobs:
             --ignore-scripts \
             --prefix src/sdkjs
 
-          mv \
-            src/sdkjs/package-lock.json \
-            src/sdkjs/npm-shrinkwrap.json
-
           # 10. web-apps/build
           echo "10. web-apps/build (full mode, patched)..."
 
@@ -1051,10 +1020,6 @@ jobs:
             --ignore-scripts \
             --prefix src/web-apps/build
 
-          mv \
-            src/web-apps/build/package-lock.json \
-            src/web-apps/build/npm-shrinkwrap.json
-
           # 11. document-server-package/home/npm
           echo "11. document-server-package/home/npm (full mode)..."
 
@@ -1065,10 +1030,6 @@ jobs:
             --lockfile-version 3 \
             --ignore-scripts \
             --prefix src/document-server-package/common/documentserver/home/npm
-
-          mv \
-            src/document-server-package/common/documentserver/home/npm/package-lock.json \
-            src/document-server-package/common/documentserver/home/npm/npm-shrinkwrap.json
 
       - name: Phase 1 - yao-pkg installations (12a-12b)
         run: |
@@ -1110,14 +1071,231 @@ jobs:
               --prefix "src/yao-pkg-${arch}" \
               "@yao-pkg/pkg@${YAO_PKG_VER}"
 
-            mv \
-              "src/yao-pkg-${arch}/package-lock.json" \
-              "src/yao-pkg-${arch}/npm-shrinkwrap.json"
-
           done
 
-          echo "Phase 1 complete: All 13 shrinkwraps generated"
+          echo "Phase 1 dependency trees generated."
           du -sh "${TEMP_CACHE}"
+
+      # ================================================================
+      # PHASE 1: DIAGNOSE AND APPROVE LIFECYCLE SCRIPTS
+      # ================================================================
+
+      - name: Diagnose and approve npm lifecycle scripts
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "NPM LIFECYCLE SCRIPT POLICY"
+          echo "========================================"
+
+          echo
+          echo "Pending scripts before approval:"
+          echo
+
+          for dir in \
+            src/server/Common \
+            src/server/DocService \
+            src/server/Metrics \
+            src/yao-pkg-arm64 \
+            src/yao-pkg-x64
+          do
+            echo
+            echo "--- ${dir} ---"
+            (
+              cd "${dir}"
+              npm approve-scripts --allow-scripts-pending
+            )
+          done
+
+          echo
+          echo "Approving expected lifecycle scripts..."
+
+          (
+            cd src/server/Common
+            npm approve-scripts win-ca
+          )
+
+          (
+            cd src/server/DocService
+            npm approve-scripts oracledb sharp
+          )
+
+          (
+            cd src/server/Metrics
+            npm approve-scripts modern-syslog
+          )
+
+          (
+            cd src/yao-pkg-arm64
+            npm approve-scripts esbuild
+          )
+
+          (
+            cd src/yao-pkg-x64
+            npm approve-scripts esbuild
+          )
+
+          echo
+          echo "Pending scripts after approval:"
+          echo
+
+          pending=0
+
+          for dir in \
+            src/server/Common \
+            src/server/DocService \
+            src/server/Metrics \
+            src/yao-pkg-arm64 \
+            src/yao-pkg-x64
+          do
+            echo
+            echo "--- ${dir} ---"
+
+            output=$(
+              cd "${dir}" &&
+              npm approve-scripts --allow-scripts-pending
+            )
+
+            if [ -n "${output}" ]; then
+              echo "${output}"
+              pending=1
+            else
+              echo "No pending lifecycle scripts."
+            fi
+          done
+
+          if [ "${pending}" -ne 0 ]; then
+            echo
+            echo "ERROR: Unexpected lifecycle scripts remain unapproved."
+            echo "Review the diagnostic output above before continuing."
+            exit 1
+          fi
+
+          echo
+          echo "All expected lifecycle scripts are approved."
+
+      # ================================================================
+      # CAPTURE PACKAGE-LOCK FILES AND APPROVED PACKAGE MANIFESTS
+      # ================================================================
+
+      - name: Capture package-lock files and package metadata
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "CAPTURING PACKAGE-LOCK FILES"
+          echo "========================================"
+
+          rm -rf package-locks
+          mkdir -p package-locks
+
+          # Ordinary package-lock files are captured according to their
+          # source-relative directory:
+          #
+          #   package-locks/<source-relative-directory>/package-lock.json
+          #
+          # The Yao pkg projects are the exception. They have separate
+          # architecture-specific dependency trees and retain the existing
+          # root-level naming convention used by the FreeBSD port.
+
+          for rel_path in \
+            sdkjs/build \
+            web-apps/vendor/framework7-react \
+            server/Metrics \
+            server/FileConverter \
+            server/Common \
+            server \
+            server/DocService \
+            sdkjs \
+            web-apps/build \
+            document-server-package/common/documentserver/home/npm \
+            document-server-integration/web/documentserver-example/nodejs
+          do
+
+            source="src/${rel_path}/package-lock.json"
+            target="package-locks/${rel_path}/package-lock.json"
+
+            if [ ! -f "${source}" ]; then
+              echo "ERROR: Missing generated package-lock:"
+              echo "  ${source}"
+              exit 1
+            fi
+
+            mkdir -p "$(dirname "${target}")"
+
+            cp \
+              "${source}" \
+              "${target}"
+
+            echo "  ${target}"
+          done
+
+          echo
+          echo "Capturing architecture-specific Yao package-lock files..."
+
+          # The FreeBSD port selects one of these files using MACHINE_ARCH.
+          # Preserve that interface while transitioning from npm-shrinkwrap
+          # to package-lock.json.
+
+          if [ ! -f src/yao-pkg-arm64/package-lock.json ]; then
+            echo "ERROR: Missing Yao arm64 package-lock:"
+            echo "  src/yao-pkg-arm64/package-lock.json"
+            exit 1
+          fi
+
+          if [ ! -f src/yao-pkg-x64/package-lock.json ]; then
+            echo "ERROR: Missing Yao x64 package-lock:"
+            echo "  src/yao-pkg-x64/package-lock.json"
+            exit 1
+          fi
+
+          cp \
+            src/yao-pkg-arm64/package-lock.json \
+            yao-pkg-npm-package-lock-aarch64.json
+
+          cp \
+            src/yao-pkg-x64/package-lock.json \
+            yao-pkg-npm-package-lock-amd64.json
+
+          echo "  yao-pkg-npm-package-lock-aarch64.json"
+          echo "  yao-pkg-npm-package-lock-amd64.json"
+
+          echo
+          echo "Capturing package.json files containing generated metadata..."
+
+          # sdkjs and Yao are generated by this workflow.
+          cp src/sdkjs/package.json sdkjs-package.json
+          cp src/yao-pkg-arm64/package.json yao-pkg-package.json
+
+          # These package.json files contain npm12 allowScripts approvals
+          # and therefore must accompany their package-lock files.
+          cp src/server/Common/package.json server-Common-package.json
+          cp src/server/DocService/package.json server-DocService-package.json
+          cp src/server/Metrics/package.json server-Metrics-package.json
+
+          echo
+          echo "Package-lock inventory:"
+          find package-locks \
+            -type f \
+            -name package-lock.json |
+          sort
+
+          lock_count=$(
+            find package-locks \
+              -type f \
+              -name package-lock.json |
+            wc -l
+          )
+
+          if [ "${lock_count}" -ne 11 ]; then
+            echo
+            echo "ERROR: Expected 11 ordinary package-lock files, found ${lock_count}."
+            exit 1
+          fi
+
+          echo
+          echo "Captured ${lock_count} ordinary package-lock files."
+          echo "Captured 2 architecture-specific Yao package-lock files."
 
       # ================================================================
       # PHASE 2: REBUILD CACHE
@@ -1262,70 +1440,6 @@ jobs:
 
           echo "Phase 2 complete: 13 directories cached"
           du -sh "${NPM_CACHE}/_cacache"
-
-      # ================================================================
-      # CAPTURE SHRINKWRAPS
-      # ================================================================
-
-      - name: Capture artifacts
-        run: |
-          set -e
-
-          echo "--- Capturing artifacts ---"
-
-          mkdir -p \
-            src/shrinkwrap/sdkjs/build \
-            src/shrinkwrap/web-apps/vendor/framework7-react \
-            src/shrinkwrap/web-apps/build \
-            src/shrinkwrap/server/Metrics \
-            src/shrinkwrap/server/FileConverter \
-            src/shrinkwrap/server/Common \
-            src/shrinkwrap/server/DocService \
-            src/shrinkwrap/sdkjs \
-            src/shrinkwrap/document-server-package/common/documentserver/home/npm \
-            src/shrinkwrap/document-server-integration/web/documentserver-example/nodejs
-
-          echo "Copying shrinkwrap files..."
-
-          for rel_path in \
-            sdkjs/build \
-            web-apps/vendor/framework7-react \
-            server/Metrics \
-            server/FileConverter \
-            server/Common \
-            server \
-            server/DocService \
-            sdkjs \
-            web-apps/build \
-            document-server-package/common/documentserver/home/npm \
-            document-server-integration/web/documentserver-example/nodejs
-          do
-
-            cp \
-              "src/${rel_path}/npm-shrinkwrap.json" \
-              "src/shrinkwrap/${rel_path}/"
-
-          done
-
-          # Copy yao-pkg arch-specific files
-          cp \
-            src/yao-pkg-arm64/npm-shrinkwrap.json \
-            yao-pkg-npm-shrinkwrap-aarch64.json
-
-          cp \
-            src/yao-pkg-x64/npm-shrinkwrap.json \
-            yao-pkg-npm-shrinkwrap-amd64.json
-
-          cp \
-            src/yao-pkg-arm64/package.json \
-            yao-pkg-package.json
-
-          # Copy created package.json
-          cp \
-            src/sdkjs/package.json \
-            sdkjs-package.json
-
-          echo "All 13 shrinkwraps captured"
 
       # ================================================================
       # OFFLINE SMOKE TEST
@@ -1513,13 +1627,13 @@ jobs:
 
           echo "Packuments: ${packument_size}"
 
-          shrinkwrap_count=$(
-            find src/shrinkwrap \
-              -name npm-shrinkwrap.json |
+          package_lock_count=$(
+            find package-locks \
+              -name package-lock.json |
             wc -l
           )
 
-          echo "Shrinkwrap files: ${shrinkwrap_count} + 2 yao-pkg = 13 total"
+          echo "Package-lock files: ${package_lock_count}"
 
           echo
           echo "Node versions:"
@@ -1535,27 +1649,45 @@ jobs:
           echo "  HEAD SHA:             $(grep '^PKG_FETCH_HEAD_SHA=' pkg-fetch-build-info.txt | cut -d= -f2-)"
 
           echo
-          echo "Strategy: Minimal-packument with 13 shrinkwraps"
+          echo "Strategy: Minimal-packument with 13 package-lock files"
           echo "Flags used: --legacy-peer-deps --no-audit --no-fund"
           echo "Platform flags: --os freebsd --cpu x64 (or arm64)"
 
       # ================================================================
-      # PREPARE RELEASE
+      # REMOVE OLD SHRINKWRAP METADATA
       # ================================================================
 
-      - name: Set variables
-        id: vars
+      - name: Remove obsolete shrinkwrap metadata
         run: |
           set -e
 
-          TAG="${DS_TAG}"
-          DATE="$(date +%Y%m%d%H%M)"
-          RELEASE_TAG="${TAG}-${DATE}"
+          echo "========================================"
+          echo "REMOVING OBSOLETE SHRINKWRAP METADATA"
+          echo "========================================"
 
-          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
-          echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          # Remove the old tracked shrinkwrap directory from the repository.
+          rm -rf shrinkwrap
+          git rm -r --ignore-unmatch shrinkwrap
 
-      - name: Prep for release
+          # Remove the old root-level Yao shrinkwrap files, if present.
+          git rm \
+            --ignore-unmatch \
+            yao-pkg-npm-shrinkwrap-aarch64.json \
+            yao-pkg-npm-shrinkwrap-amd64.json
+
+          # Remove stale generated files from previous workflow versions.
+          rm -f \
+            yao-pkg-npm-shrinkwrap-aarch64.json \
+            yao-pkg-npm-shrinkwrap-amd64.json
+
+          echo
+          echo "Obsolete shrinkwrap metadata removed."
+
+      # ================================================================
+      # CLEAN CACHE LOGS
+      # ================================================================
+
+      - name: Clean generated cache metadata
         run: |
           set -e
 
@@ -1563,107 +1695,11 @@ jobs:
             "${NPM_CACHE}/_logs" \
             "${NPM_CACHE}/_update-notifier-last-checked"
 
-          cp -r \
-            src/shrinkwrap \
-            shrinkwrap
-
       # ================================================================
-      # CREATE RELEASE TARBALL
+      # COMMIT DEVELOPMENT METADATA
       # ================================================================
 
-      - name: Create release tarball
-        run: |
-          set -e
-
-          RELEASE_TAG="${{ steps.vars.outputs.release_tag }}"
-          DIR_NAME="onlyoffice-DS-npm-cache-${RELEASE_TAG}"
-          TAR_NAME="${DIR_NAME}.tar.gz"
-
-          rm -rf "${DIR_NAME}"
-
-          mkdir "${DIR_NAME}"
-
-          # Copy everything into staging directory.
-          cp -a \
-            "${NPM_CACHE}/_cacache" \
-            "${DIR_NAME}/_cacache"
-
-          cp -a \
-            "extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.patch" \
-            "${DIR_NAME}/"
-
-          cp -a \
-            sdkjs-package.json \
-            "${DIR_NAME}/"
-
-          cp -a \
-            shrinkwrap \
-            "${DIR_NAME}/"
-
-          cp -a \
-            yao-pkg-npm-shrinkwrap-*.json \
-            "${DIR_NAME}/"
-
-          cp -a \
-            yao-pkg-package.json \
-            "${DIR_NAME}/"
-
-          cp \
-            pkg-fetch-build-info.txt \
-            "${DIR_NAME}/build-info.txt"
-
-          {
-            echo "Node:               ${FREEBSD_NODE_VER}"
-            echo "FreeBSD node major: ${NODE_MAJOR}"
-            echo "npm:                ${NPM_VER}"
-            echo "@yao-pkg/pkg:       ${YAO_PKG_VER}"
-            echo "@yao-pkg/pkg-fetch: ${PKG_FETCH_VER}"
-            echo "Published Node:     ${PUBLISHED_NODE_VER}"
-            echo "pkg-fetch baseline: $(grep '^PKG_FETCH_BASELINE=' pkg-fetch-build-info.txt | cut -d= -f2-)"
-            echo "pkg-fetch leapfrog: $(grep '^PKG_FETCH_LEAPFROG=' pkg-fetch-build-info.txt | cut -d= -f2-)"
-            echo "pkg-fetch HEAD SHA: $(grep '^PKG_FETCH_HEAD_SHA=' pkg-fetch-build-info.txt | cut -d= -f2-)"
-            echo "FreeBSD patches:    $(grep '^FREEBSD_PATCH_COUNT=' pkg-fetch-build-info.txt | cut -d= -f2-)"
-          } > "${DIR_NAME}/build-info.txt"
-
-          # Create tarball with stable ordering.
-          tar \
-            --sort=name \
-            --mtime='UTC 2020-01-01' \
-            --owner=0 \
-            --group=0 \
-            --numeric-owner \
-            -czf "${TAR_NAME}" \
-            "${DIR_NAME}"
-
-          echo "TAR_NAME=${TAR_NAME}" >> "${GITHUB_ENV}"
-
-          echo
-          echo "Created:"
-          echo "  ${TAR_NAME}"
-
-      # ================================================================
-      # COMMIT METADATA
-      # ================================================================
-
-      - name: Clean old generated metadata
-        run: |
-          set -e
-
-          # Remove stale generated pkg-fetch patch files from the working
-          # tree/index. The actual generated patch below is then added.
-          find . \
-            -maxdepth 1 \
-            -type f \
-            -name 'extra-patch-pkg-fetch_patches_node.v*.patch' \
-            ! -name "extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.patch" \
-            -print \
-            -delete
-
-          git rm \
-            --ignore-unmatch \
-            'extra-patch-pkg-fetch_patches_node.v*.patch' || true
-
-      - name: Commit metadata
+      - name: Commit development metadata
         run: |
           set -e
 
@@ -1672,59 +1708,27 @@ jobs:
 
           git add \
             "extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.patch" \
+            package-locks \
+            yao-pkg-npm-package-lock-aarch64.json \
+            yao-pkg-npm-package-lock-amd64.json \
             sdkjs-package.json \
-            shrinkwrap \
-            yao-pkg-npm-shrinkwrap-*.json \
-            yao-pkg-package.json
+            yao-pkg-package.json \
+            server-Common-package.json \
+            server-DocService-package.json \
+            server-Metrics-package.json
+
+          git add -u
+
+          if git diff --cached --quiet; then
+            echo "No repository changes."
+            exit 0
+          fi
+
+          git status --short
 
           git commit \
-            -m "Update npm cache metadata for ${{ steps.vars.outputs.release_tag }}" \
-            || echo "No changes"
-
-      # ================================================================
-      # PUSH COMMIT + RELEASE TAG
-      # ================================================================
-
-      - name: Create tag
-        run: |
-          set -e
+            -m "Update npm cache development metadata"
 
           git push \
             origin \
             "HEAD:${{ github.ref_name }}"
-
-          git tag \
-            "${{ steps.vars.outputs.release_tag }}"
-
-          git push \
-            origin \
-            "${{ steps.vars.outputs.release_tag }}"
-
-      # ================================================================
-      # CREATE GITHUB RELEASE
-      # ================================================================
-
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-
-          gh release create \
-            "${{ steps.vars.outputs.release_tag }}" \
-            "${TAR_NAME}" \
-            --title "NPM Cache ${{ steps.vars.outputs.release_tag }}" \
-            --notes "Offline npm cache for OnlyOffice DocumentServer
-
-          ## Build Metadata
-
-          - Node:               ${FREEBSD_NODE_VER}
-          - FreeBSD node major: ${NODE_MAJOR}
-          - npm:                ${NPM_VER}
-          - @yao-pkg/pkg:       ${YAO_PKG_VER}
-          - @yao-pkg/pkg-fetch: ${PKG_FETCH_VER}
-          - Published Node:     ${PUBLISHED_NODE_VER}
-          - pkg-fetch baseline: $(grep '^PKG_FETCH_BASELINE=' pkg-fetch-build-info.txt | cut -d= -f2-)
-          - pkg-fetch leapfrog: $(grep '^PKG_FETCH_LEAPFROG=' pkg-fetch-build-info.txt | cut -d= -f2-)
-          - pkg-fetch HEAD SHA: $(grep '^PKG_FETCH_HEAD_SHA=' pkg-fetch-build-info.txt | cut -d= -f2-)
-          - FreeBSD patches:    $(grep '^FREEBSD_PATCH_COUNT=' pkg-fetch-build-info.txt | cut -d= -f2-)"
