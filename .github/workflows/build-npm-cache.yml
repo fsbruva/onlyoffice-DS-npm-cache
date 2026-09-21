@@ -1,13 +1,14 @@
 # .github/workflows/build-npm-cache.yml
 #
-# DEVELOPMENT/TRANSITION CACHE BUILD - MINIMAL PACKUMENTS STRATEGY
+# npm-12 CACHE BUILD - MINIMAL PACKUMENTS STRATEGY
 #
-# Phase 1: Generate package-lock.json files and approve required lifecycle scripts
+# Phase 1: Generate package-lock.json files and audit/approve lifecycle scripts
 # Phase 2: Rebuild the npm cache using the generated package-lock.json files
+# Release: tarball + tag + GitHub release + committed metadata
 #
-# This workflow intentionally does NOT create a release, tag, or tarball.
-# It commits the generated package-lock.json files and associated package.json
-# metadata directly to the repository.
+# npm 12 IGNORES npm-shrinkwrap.json for these trees, so this workflow captures
+# package-lock.json files instead. The old shrinkwrap metadata is actively
+# removed from the repository by the cleanout step below.
 #
 # KEY: Match NODE_ENV and flags used by actual build scripts
 # KEY: Use THREE flags in Phase 2 to prevent MOST packument fetching:
@@ -20,10 +21,23 @@
 # Package-lock files are captured using their source-relative paths:
 #
 #   package-locks/<source-relative-directory>/package-lock.json
+#   package-locks/<source-relative-directory>/package.json
 #
-# The captured package.json files are also committed where they contain
-# generated/approved metadata required by the FreeBSD npm12 consumer,
-# particularly the npm12 allowScripts policy.
+# The package.json files are captured alongside every package-lock because
+# npm 12 records the allowScripts policy inside package.json. Any directory
+# that gains an approval MUST ship its package.json with its lock file.
+#
+# The root-level *-package.json / yao-pkg-npm-package-lock-*.json names are
+# retained because the FreeBSD port consumes those paths directly.
+#
+# LIFECYCLE SCRIPT POLICY:
+#
+#   Every one of the 13 target directories is audited with
+#   `npm approve-scripts --allow-scripts-pending`. Approvals are declared in
+#   ONE table (APPROVE_MAP below). After approval, the audit is re-run over
+#   all 13 directories and the build FAILS if anything is still pending.
+#   This makes a new or moved install script a hard build error rather than
+#   a silent behaviour change in the jail.
 #
 # PKG-FETCH NODE VERSION HANDLING:
 #
@@ -42,13 +56,14 @@
 #
 #   extra-patch-pkg-fetch_patches_node.vFREEBSD_NODE_VER.patch
 #
-# This single patch transforms the released @yao-pkg/pkg-fetch package into
-# the exact pkg-fetch patch set needed by the FreeBSD node port.
+# Because FREEBSD_NODE_VER moves over time, the cleanout step removes any
+# previously committed extra-patch file for a DIFFERENT node version, both
+# from the working tree and from the git index.
 #
 # The pkg-fetch HEAD SHA is recorded in build-info.txt so the generated cache
 # can always be traced back to the exact upstream pkg-fetch source used.
 
-name: Build npm Cache (Development/Transition)
+name: Build npm Cache (npm12 / package-lock)
 
 on:
   workflow_dispatch:
@@ -73,12 +88,26 @@ on:
         description: '@yao-pkg/pkg version (e.g. 6.22.0)'
         required: true
         default: '6.22.0'
+      publish_release:
+        description: 'Create tag + GitHub release (uncheck for metadata-only dev runs)'
+        type: boolean
+        required: true
+        default: true
 
+  push:
+    tags:
+      - "v*"
+
+# NOTE: on a tag push there are no workflow inputs, so every env value below
+# falls back to a literal default. DS_TAG then comes from the pushed tag.
 env:
-  DS_TAG:      "v${{ github.event.inputs.ds_version }}.${{ github.event.inputs.ds_build }}"
-  NODE_MAJOR:  "${{ github.event.inputs.node_major }}"
-  NPM_VER:     "${{ github.event.inputs.npm_version }}"
-  YAO_PKG_VER: "${{ github.event.inputs.yao_pkg_ver }}"
+  DS_TAG: >-
+    ${{ github.event_name == 'workflow_dispatch'
+        && format('v{0}.{1}', github.event.inputs.ds_version, github.event.inputs.ds_build)
+        || github.ref_name }}
+  NODE_MAJOR:  "${{ github.event.inputs.node_major  || '24' }}"
+  NPM_VER:     "${{ github.event.inputs.npm_version || '12.0.2' }}"
+  YAO_PKG_VER: "${{ github.event.inputs.yao_pkg_ver || '6.22.0' }}"
   NPM_CACHE:   "${{ github.workspace }}/npm-cache"
   TEMP_CACHE:  "${{ github.workspace }}/temp-cache"
 
@@ -98,7 +127,7 @@ jobs:
 
       # Bootstrap with any Node in the requested major so we have npm
       # available to install @yao-pkg/pkg and inspect its dependency tree.
-      - name: Bootstrap Node.js ${{ github.event.inputs.node_major }}.x
+      - name: Bootstrap Node.js ${{ env.NODE_MAJOR }}.x
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_MAJOR }}.x
@@ -419,7 +448,6 @@ jobs:
              "pkg": {
           PATCH_EOF
 
-
           # web-apps/build patch
           cat > patches/patch-web-apps_build_package.json << 'PATCH_EOF'
           --- web-apps/build/package.json.orig	2026-02-23 07:24:11 UTC
@@ -502,9 +530,9 @@ jobs:
 
           echo
           echo "Version comparison:"
-          echo "  FreeBSD target:       ${FREEBSD_NODE_VER}"
+          echo "  FreeBSD target:      ${FREEBSD_NODE_VER}"
           echo "  Published pkg-fetch: ${PUBLISHED_NODE_VER}"
-          echo "  pkg-fetch version:    ${PKG_FETCH_VER}"
+          echo "  pkg-fetch version:   ${PKG_FETCH_VER}"
 
           # ------------------------------------------------------------
           # Obtain the target pkg-fetch patch.
@@ -717,7 +745,6 @@ jobs:
 
           rm -rf patches
 
-          echo "--- Running patch-package ---"
           npm_config_allow_remote=all npx patch-package "@yao-pkg/pkg-fetch"
 
           PATCH_FILE=$(
@@ -786,6 +813,15 @@ jobs:
             echo "PKG_FETCH_HEAD_SHA=${PKG_FETCH_HEAD_SHA}"
             echo "FREEBSD_PATCH_COUNT=${FREEBSD_PATCH_COUNT}"
           } > "${GITHUB_WORKSPACE}/pkg-fetch-build-info.txt"
+
+          # Export for later steps (release notes, build-info.txt).
+          {
+            echo "PKG_FETCH_BASELINE=${PKG_FETCH_BASELINE}"
+            echo "PKG_FETCH_LEAPFROG=${PKG_FETCH_LEAPFROG}"
+            echo "PKG_FETCH_HEAD_SHA=${PKG_FETCH_HEAD_SHA}"
+            echo "FREEBSD_PATCH_COUNT=${FREEBSD_PATCH_COUNT}"
+            echo "EXTRA_PATCH_NAME=extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.patch"
+          } >> "${GITHUB_ENV}"
 
           echo
           echo "========================================"
@@ -905,7 +941,8 @@ jobs:
           echo "3. server/Metrics (production mode, patched)..."
 
           rm -f \
-            src/server/Metrics/package-lock.json
+            src/server/Metrics/package-lock.json \
+            src/server/Metrics/npm-shrinkwrap.json
 
           patch -p0 -d src < patches/patch-server_Metrics_package.json
 
@@ -938,7 +975,8 @@ jobs:
           echo "6. server (production mode, patched)..."
 
           rm -f \
-            src/server/package-lock.json
+            src/server/package-lock.json \
+            src/server/npm-shrinkwrap.json
 
           patch -p0 -d src < patches/patch-server_package.json
 
@@ -954,7 +992,8 @@ jobs:
           echo "7. server/DocService (production mode, patched)..."
 
           rm -f \
-            src/server/DocService/package-lock.json
+            src/server/DocService/package-lock.json \
+            src/server/DocService/npm-shrinkwrap.json
 
           patch -p0 -d src < patches/patch-server_DocService_package.json
 
@@ -1077,10 +1116,17 @@ jobs:
           du -sh "${TEMP_CACHE}"
 
       # ================================================================
-      # PHASE 1: DIAGNOSE AND APPROVE LIFECYCLE SCRIPTS
+      # PHASE 1: AUDIT AND APPROVE LIFECYCLE SCRIPTS
+      #
+      # This audits ALL 13 target directories, not only the ones currently
+      # known to carry install scripts. A directory that newly acquires an
+      # install script therefore fails the build instead of silently
+      # shipping an unreviewed script into the jail.
+      #
+      # To approve a new script, add a line to APPROVE_MAP below.
       # ================================================================
 
-      - name: Diagnose and approve npm lifecycle scripts
+      - name: Audit and approve npm lifecycle scripts
         run: |
           set -e
 
@@ -1088,91 +1134,180 @@ jobs:
           echo "NPM LIFECYCLE SCRIPT POLICY"
           echo "========================================"
 
-          echo
-          echo "Pending scripts before approval:"
-          echo
+          # ------------------------------------------------------------
+          # The complete set of directories that this workflow installs
+          # into. Keep in sync with Phase 1 / Phase 2 / capture / smoke.
+          # ------------------------------------------------------------
+          ALL_NPM_DIRS="
+          src/sdkjs/build
+          src/web-apps/vendor/framework7-react
+          src/server
+          src/server/Common
+          src/server/DocService
+          src/server/FileConverter
+          src/server/Metrics
+          src/sdkjs
+          src/web-apps/build
+          src/document-server-package/common/documentserver/home/npm
+          src/document-server-integration/web/documentserver-example/nodejs
+          src/yao-pkg-arm64
+          src/yao-pkg-x64
+          "
 
-          for dir in \
-            src/server/Common \
-            src/server/DocService \
-            src/server/Metrics \
-            src/yao-pkg-arm64 \
-            src/yao-pkg-x64
-          do
+          # ------------------------------------------------------------
+          # THE approval table. One line per directory that is permitted
+          # to run install scripts:
+          #
+          #   <source directory><whitespace><package> [package ...]
+          #
+          # Directories not listed here must have NO pending scripts.
+          # ------------------------------------------------------------
+          APPROVE_MAP="${GITHUB_WORKSPACE}/npm-allow-scripts.txt"
+
+          cat > "${APPROVE_MAP}" <<'MAP_EOF'
+          src/server/Common        win-ca
+          src/server/DocService    oracledb sharp
+          src/server/Metrics       modern-syslog
+          src/yao-pkg-arm64        esbuild
+          src/yao-pkg-x64          esbuild
+          MAP_EOF
+
+          # ------------------------------------------------------------
+          # Helpers
+          # ------------------------------------------------------------
+
+          # Print the pending-scripts report for a directory. Never fails
+          # the step: npm exits non-zero when scripts are pending, and the
+          # decision about that is made by the caller.
+          pending_report() {
+            ( cd "$1" && npm approve-scripts --allow-scripts-pending 2>&1 ) || true
+          }
+
+          # 0 == something is pending, 1 == clean
+          has_pending() {
+            _out="$1"
+
+            if [ -z "$(printf '%s' "${_out}" | tr -d '[:space:]')" ]; then
+              return 1
+            fi
+
+            if printf '%s\n' "${_out}" |
+               grep -qi 'No packages with unreviewed install scripts'; then
+              return 1
+            fi
+
+            return 0
+          }
+
+          # ------------------------------------------------------------
+          # PASS 1: audit every directory, before approval
+          # ------------------------------------------------------------
+
+          echo
+          echo "--- PASS 1: pending scripts BEFORE approval (all directories) ---"
+
+          for dir in ${ALL_NPM_DIRS}; do
+
+            if [ ! -d "${dir}" ]; then
+              echo
+              echo "ERROR: Expected npm directory does not exist: ${dir}"
+              exit 1
+            fi
+
             echo
             echo "--- ${dir} ---"
-            (
-              cd "${dir}"
-              npm approve-scripts --allow-scripts-pending
-            )
+
+            out="$(pending_report "${dir}")"
+
+            if has_pending "${out}"; then
+              printf '%s\n' "${out}"
+            else
+              echo "No pending lifecycle scripts."
+            fi
+
           done
 
-          echo
-          echo "Approving expected lifecycle scripts..."
-
-          (
-            cd src/server/Common
-            npm approve-scripts win-ca
-          )
-
-          (
-            cd src/server/DocService
-            npm approve-scripts oracledb sharp
-          )
-
-          (
-            cd src/server/Metrics
-            npm approve-scripts modern-syslog
-          )
-
-          (
-            cd src/yao-pkg-arm64
-            npm approve-scripts esbuild
-          )
-
-          (
-            cd src/yao-pkg-x64
-            npm approve-scripts esbuild
-          )
+          # ------------------------------------------------------------
+          # PASS 2: apply the approval table
+          # ------------------------------------------------------------
 
           echo
-          echo "Pending scripts after approval:"
+          echo "--- PASS 2: applying approvals from npm-allow-scripts.txt ---"
+
+          while read -r dir pkgs; do
+
+            case "${dir}" in
+              ''|\#*) continue ;;
+            esac
+
+            if [ -z "${pkgs}" ]; then
+              echo "ERROR: No packages listed for ${dir} in the approval table."
+              exit 1
+            fi
+
+            if [ ! -d "${dir}" ]; then
+              echo "ERROR: Approval table references a missing directory: ${dir}"
+              exit 1
+            fi
+
+            echo
+            echo "--- ${dir}: approving ${pkgs} ---"
+
+            (
+              cd "${dir}"
+              # shellcheck disable=SC2086
+              npm approve-scripts ${pkgs}
+            )
+
+          done < "${APPROVE_MAP}"
+
+          # ------------------------------------------------------------
+          # PASS 3: re-audit every directory. Anything still pending is a
+          # hard failure: either the package set changed upstream, or a
+          # new script needs an explicit entry in the approval table.
+          # ------------------------------------------------------------
+
           echo
+          echo "--- PASS 3: pending scripts AFTER approval (all directories) ---"
 
           pending=0
 
-          for dir in \
-            src/server/Common \
-            src/server/DocService \
-            src/server/Metrics \
-            src/yao-pkg-arm64 \
-            src/yao-pkg-x64
-          do
+          for dir in ${ALL_NPM_DIRS}; do
+
             echo
             echo "--- ${dir} ---"
 
-            output=$(
-              cd "${dir}" &&
-              npm approve-scripts --allow-scripts-pending
-            )
+            out="$(pending_report "${dir}")"
 
-            if [ -n "${output}" && [ "${output}" != "No packages with unreviewed install scripts." ]; then
-              echo "${output}"
+            if has_pending "${out}"; then
+              printf '%s\n' "${out}"
               pending=1
             else
               echo "No pending lifecycle scripts."
             fi
+
           done
 
           if [ "${pending}" -ne 0 ]; then
             echo
-            echo "ERROR: Unexpected lifecycle scripts remain unapproved."
-            echo "Review the diagnostic output above before continuing."
+            echo "========================================"
+            echo "ERROR: Unreviewed lifecycle scripts remain."
+            echo "========================================"
+            echo
+            echo "Review the PASS 3 output above. For each package that is"
+            echo "legitimately required, add it to the approval table in the"
+            echo "'Audit and approve npm lifecycle scripts' step:"
+            echo
+            echo "  <source directory>  <package> [package ...]"
+            echo
             exit 1
           fi
 
           echo
-          echo "All expected lifecycle scripts are approved."
+          echo "All lifecycle scripts are explicitly approved."
+          echo
+          echo "Approval table:"
+          sed 's/^/  /' "${APPROVE_MAP}"
 
       # ================================================================
       # CAPTURE PACKAGE-LOCK FILES AND APPROVED PACKAGE MANIFESTS
@@ -1193,6 +1328,10 @@ jobs:
           # source-relative directory:
           #
           #   package-locks/<source-relative-directory>/package-lock.json
+          #   package-locks/<source-relative-directory>/package.json
+          #
+          # package.json travels with every lock file because npm 12 stores
+          # the allowScripts policy there.
           #
           # The Yao pkg projects are the exception. They have separate
           # architecture-specific dependency trees and retain the existing
@@ -1212,22 +1351,29 @@ jobs:
             document-server-integration/web/documentserver-example/nodejs
           do
 
-            source="src/${rel_path}/package-lock.json"
-            target="package-locks/${rel_path}/package-lock.json"
+            source_lock="src/${rel_path}/package-lock.json"
+            source_pkg="src/${rel_path}/package.json"
+            target_dir="package-locks/${rel_path}"
 
-            if [ ! -f "${source}" ]; then
+            if [ ! -f "${source_lock}" ]; then
               echo "ERROR: Missing generated package-lock:"
-              echo "  ${source}"
+              echo "  ${source_lock}"
               exit 1
             fi
 
-            mkdir -p "$(dirname "${target}")"
+            if [ ! -f "${source_pkg}" ]; then
+              echo "ERROR: Missing package.json:"
+              echo "  ${source_pkg}"
+              exit 1
+            fi
 
-            cp \
-              "${source}" \
-              "${target}"
+            mkdir -p "${target_dir}"
 
-            echo "  ${target}"
+            cp "${source_lock}" "${target_dir}/package-lock.json"
+            cp "${source_pkg}"  "${target_dir}/package.json"
+
+            echo "  ${target_dir}/package-lock.json"
+            echo "  ${target_dir}/package.json"
           done
 
           echo
@@ -1237,17 +1383,13 @@ jobs:
           # Preserve that interface while transitioning from npm-shrinkwrap
           # to package-lock.json.
 
-          if [ ! -f src/yao-pkg-arm64/package-lock.json ]; then
-            echo "ERROR: Missing Yao arm64 package-lock:"
-            echo "  src/yao-pkg-arm64/package-lock.json"
-            exit 1
-          fi
-
-          if [ ! -f src/yao-pkg-x64/package-lock.json ]; then
-            echo "ERROR: Missing Yao x64 package-lock:"
-            echo "  src/yao-pkg-x64/package-lock.json"
-            exit 1
-          fi
+          for arch in arm64 x64; do
+            if [ ! -f "src/yao-pkg-${arch}/package-lock.json" ]; then
+              echo "ERROR: Missing Yao ${arch} package-lock:"
+              echo "  src/yao-pkg-${arch}/package-lock.json"
+              exit 1
+            fi
+          done
 
           cp \
             src/yao-pkg-arm64/package-lock.json \
@@ -1261,17 +1403,24 @@ jobs:
           echo "  yao-pkg-npm-package-lock-amd64.json"
 
           echo
-          echo "Capturing package.json files containing generated metadata..."
+          echo "Capturing root-level package.json files consumed by the port..."
 
-          # sdkjs and Yao are generated by this workflow.
-          cp src/sdkjs/package.json sdkjs-package.json
-          cp src/yao-pkg-arm64/package.json yao-pkg-package.json
+          # Generated by this workflow.
+          cp src/sdkjs/package.json          sdkjs-package.json
+
+          # yao-pkg-arm64 and yao-pkg-x64 share dependencies but each holds
+          # its own allowScripts approval, so both are captured.
+          cp src/yao-pkg-arm64/package.json  yao-pkg-package-aarch64.json
+          cp src/yao-pkg-x64/package.json    yao-pkg-package-amd64.json
+
+          # Backwards-compatible name still referenced by the port.
+          cp src/yao-pkg-arm64/package.json  yao-pkg-package.json
 
           # These package.json files contain npm12 allowScripts approvals
           # and therefore must accompany their package-lock files.
-          cp src/server/Common/package.json server-Common-package.json
-          cp src/server/DocService/package.json server-DocService-package.json
-          cp src/server/Metrics/package.json server-Metrics-package.json
+          cp src/server/Common/package.json      server-Common-package.json
+          cp src/server/DocService/package.json  server-DocService-package.json
+          cp src/server/Metrics/package.json     server-Metrics-package.json
 
           echo
           echo "Package-lock inventory:"
@@ -1633,20 +1782,25 @@ jobs:
             wc -l
           )
 
-          echo "Package-lock files: ${package_lock_count}"
+          echo "Package-lock files: ${package_lock_count} + 2 yao-pkg = 13 total"
 
           echo
           echo "Node versions:"
-          echo "  FreeBSD target:       ${FREEBSD_NODE_VER}"
+          echo "  FreeBSD target:      ${FREEBSD_NODE_VER}"
           echo "  Published pkg-fetch: ${PUBLISHED_NODE_VER}"
 
           echo
           echo "pkg-fetch:"
-          echo "  @yao-pkg/pkg:         ${YAO_PKG_VER}"
-          echo "  @yao-pkg/pkg-fetch:   ${PKG_FETCH_VER}"
-          echo "  Baseline:             $(grep '^PKG_FETCH_BASELINE=' pkg-fetch-build-info.txt | cut -d= -f2-)"
-          echo "  Leapfrog:             $(grep '^PKG_FETCH_LEAPFROG=' pkg-fetch-build-info.txt | cut -d= -f2-)"
-          echo "  HEAD SHA:             $(grep '^PKG_FETCH_HEAD_SHA=' pkg-fetch-build-info.txt | cut -d= -f2-)"
+          echo "  @yao-pkg/pkg:       ${YAO_PKG_VER}"
+          echo "  @yao-pkg/pkg-fetch: ${PKG_FETCH_VER}"
+          echo "  Baseline:           ${PKG_FETCH_BASELINE}"
+          echo "  Leapfrog:           ${PKG_FETCH_LEAPFROG}"
+          echo "  HEAD SHA:           ${PKG_FETCH_HEAD_SHA:-N/A}"
+          echo "  FreeBSD patches:    ${FREEBSD_PATCH_COUNT}"
+
+          echo
+          echo "Approved lifecycle scripts:"
+          sed 's/^/  /' "${GITHUB_WORKSPACE}/npm-allow-scripts.txt"
 
           echo
           echo "Strategy: Minimal-packument with 13 package-lock files"
@@ -1654,81 +1808,331 @@ jobs:
           echo "Platform flags: --os freebsd --cpu x64 (or arm64)"
 
       # ================================================================
-      # REMOVE OLD SHRINKWRAP METADATA
+      # CLEAN OUT OBSOLETE / STALE GENERATED ARTIFACTS
+      #
+      # Two distinct classes of stale artifact:
+      #
+      #   1. shrinkwrap-era metadata, obsolete under npm 12
+      #   2. version-stamped metadata whose version has moved, most
+      #      importantly extra-patch-pkg-fetch_patches_node.vX.Y.Z.patch
+      #
+      # Both are removed from the working tree AND from the git index so
+      # that the commit below records the deletion.
       # ================================================================
 
-      - name: Remove obsolete shrinkwrap metadata
+      - name: Clean obsolete and stale artifacts
         run: |
           set -e
 
           echo "========================================"
-          echo "REMOVING OBSOLETE SHRINKWRAP METADATA"
+          echo "CLEANING OBSOLETE / STALE ARTIFACTS"
           echo "========================================"
 
-          # Remove the old tracked shrinkwrap directory from the repository.
+          CURRENT_EXTRA_PATCH="extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.patch"
+
+          # ------------------------------------------------------------
+          # 1. Stale pkg-fetch extra-patch files (previous Node versions)
+          # ------------------------------------------------------------
+
+          echo
+          echo "--- Stale pkg-fetch extra-patch files ---"
+          echo "Keeping: ${CURRENT_EXTRA_PATCH}"
+
+          find . \
+            -maxdepth 1 \
+            -type f \
+            -name 'extra-patch-pkg-fetch_patches_node.v*.patch' \
+            ! -name "${CURRENT_EXTRA_PATCH}" \
+            -print \
+            -delete
+
+          # Remove them from the index too, without touching the current one.
+          for tracked in $(
+            git ls-files 'extra-patch-pkg-fetch_patches_node.v*.patch'
+          ); do
+            if [ "${tracked}" != "${CURRENT_EXTRA_PATCH}" ]; then
+              echo "git rm: ${tracked}"
+              git rm --quiet --ignore-unmatch "${tracked}"
+            fi
+          done
+
+          # Very old naming convention from the July workflow.
+          rm -f ./*.cpp.patch
+          git rm --quiet --ignore-unmatch '*.cpp.patch' || true
+
+          # ------------------------------------------------------------
+          # 2. Obsolete shrinkwrap metadata (npm 12 ignores it)
+          # ------------------------------------------------------------
+
+          echo
+          echo "--- Obsolete shrinkwrap metadata ---"
+
           rm -rf shrinkwrap
-          git rm -r --ignore-unmatch shrinkwrap
+          git rm -r --quiet --ignore-unmatch shrinkwrap || true
 
-          # Remove the old root-level Yao shrinkwrap files, if present.
-          git rm \
-            --ignore-unmatch \
-            yao-pkg-npm-shrinkwrap-aarch64.json \
-            yao-pkg-npm-shrinkwrap-amd64.json
-
-          # Remove stale generated files from previous workflow versions.
           rm -f \
             yao-pkg-npm-shrinkwrap-aarch64.json \
             yao-pkg-npm-shrinkwrap-amd64.json
 
-          echo
-          echo "Obsolete shrinkwrap metadata removed."
+          git rm --quiet --ignore-unmatch \
+            yao-pkg-npm-shrinkwrap-aarch64.json \
+            yao-pkg-npm-shrinkwrap-amd64.json || true
 
-      # ================================================================
-      # CLEAN CACHE LOGS
-      # ================================================================
+          # ------------------------------------------------------------
+          # 3. Stray cache directory accidentally committed by old runs
+          # ------------------------------------------------------------
 
-      - name: Clean generated cache metadata
-        run: |
-          set -e
+          rm -rf _cacache
+          git rm -r --quiet --ignore-unmatch _cacache || true
+
+          # ------------------------------------------------------------
+          # 4. npm cache internals that must not ship in the tarball
+          # ------------------------------------------------------------
 
           rm -rf \
             "${NPM_CACHE}/_logs" \
             "${NPM_CACHE}/_update-notifier-last-checked"
 
+          echo
+          echo "Cleanout complete."
+          echo
+          echo "Repository status:"
+          git status --short || true
+
       # ================================================================
-      # COMMIT DEVELOPMENT METADATA
+      # PREPARE RELEASE
       # ================================================================
 
-      - name: Commit development metadata
+      - name: Set variables
+        id: vars
         run: |
           set -e
 
-          git config user.name "github-actions"
+          TAG="${DS_TAG}"
+          DATE="$(date +%Y%m%d%H%M)"
+          RELEASE_TAG="${TAG}-${DATE}"
+
+          echo "tag=${TAG}"                 >> "${GITHUB_OUTPUT}"
+          echo "release_tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+
+          echo "Release tag: ${RELEASE_TAG}"
+
+      # ================================================================
+      # CREATE RELEASE TARBALL
+      # ================================================================
+
+      - name: Create release tarball
+        run: |
+          set -e
+
+          RELEASE_TAG="${{ steps.vars.outputs.release_tag }}"
+          DIR_NAME="onlyoffice-DS-npm-cache-${RELEASE_TAG}"
+          TAR_NAME="${DIR_NAME}.tar.gz"
+
+          rm -rf "${DIR_NAME}"
+          mkdir "${DIR_NAME}"
+
+          # The offline cache itself.
+          cp -a \
+            "${NPM_CACHE}/_cacache" \
+            "${DIR_NAME}/_cacache"
+
+          # The single pkg-fetch extra-patch for this Node version.
+          cp -a \
+            "extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.patch" \
+            "${DIR_NAME}/"
+
+          # package-lock.json + package.json trees.
+          cp -a package-locks "${DIR_NAME}/"
+
+          # Root-level files consumed directly by the FreeBSD port.
+          cp -a \
+            yao-pkg-npm-package-lock-aarch64.json \
+            yao-pkg-npm-package-lock-amd64.json \
+            yao-pkg-package.json \
+            yao-pkg-package-aarch64.json \
+            yao-pkg-package-amd64.json \
+            sdkjs-package.json \
+            server-Common-package.json \
+            server-DocService-package.json \
+            server-Metrics-package.json \
+            "${DIR_NAME}/"
+
+          # The lifecycle-script approval table, for auditability.
+          cp -a \
+            "${GITHUB_WORKSPACE}/npm-allow-scripts.txt" \
+            "${DIR_NAME}/"
+
+          # Build manifest (tarball-only, not committed to the repo).
+          {
+            echo "DS_TAG:              ${DS_TAG}"
+            echo "Release tag:         ${RELEASE_TAG}"
+            echo "Node:                ${FREEBSD_NODE_VER}"
+            echo "FreeBSD node major:  ${NODE_MAJOR}"
+            echo "npm:                 ${NPM_VER}"
+            echo "@yao-pkg/pkg:        ${YAO_PKG_VER}"
+            echo "@yao-pkg/pkg-fetch:  ${PKG_FETCH_VER}"
+            echo "Published Node:      ${PUBLISHED_NODE_VER}"
+            echo "pkg-fetch baseline:  ${PKG_FETCH_BASELINE}"
+            echo "pkg-fetch leapfrog:  ${PKG_FETCH_LEAPFROG}"
+            echo "pkg-fetch HEAD SHA:  ${PKG_FETCH_HEAD_SHA:-N/A}"
+            echo "FreeBSD patches:     ${FREEBSD_PATCH_COUNT}"
+            echo "Lockfile format:     package-lock.json (lockfile-version 3)"
+            echo "Built from:          ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
+          } > "${DIR_NAME}/build-info.txt"
+
+          # Create tarball with stable ordering (important for distinfo).
+          tar \
+            --sort=name \
+            --mtime='UTC 2020-01-01' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -czf "${TAR_NAME}" \
+            "${DIR_NAME}"
+
+          echo "TAR_NAME=${TAR_NAME}" >> "${GITHUB_ENV}"
+
+          echo
+          echo "Created:"
+          ls -lh "${TAR_NAME}"
+          echo
+          echo "SHA256: $(sha256sum "${TAR_NAME}" | awk '{print $1}')"
+          echo "SIZE:   $(stat -c %s "${TAR_NAME}")"
+
+      # ================================================================
+      # COMMIT METADATA
+      # ================================================================
+
+      - name: Commit metadata
+        id: commit
+        run: |
+          set -e
+
+          git config user.name  "github-actions"
           git config user.email "actions@github.com"
 
           git add \
             "extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.patch" \
             package-locks \
+            npm-allow-scripts.txt \
             yao-pkg-npm-package-lock-aarch64.json \
             yao-pkg-npm-package-lock-amd64.json \
-            sdkjs-package.json \
             yao-pkg-package.json \
+            yao-pkg-package-aarch64.json \
+            yao-pkg-package-amd64.json \
+            sdkjs-package.json \
             server-Common-package.json \
             server-DocService-package.json \
             server-Metrics-package.json
 
+          # Pick up deletions performed by the cleanout step.
           git add -u
 
           if git diff --cached --quiet; then
             echo "No repository changes."
+            echo "committed=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
           git status --short
 
           git commit \
-            -m "Update npm cache development metadata"
+            -m "npm cache metadata for ${{ steps.vars.outputs.release_tag }}" \
+            -m "Node ${FREEBSD_NODE_VER} / npm ${NPM_VER} / @yao-pkg/pkg ${YAO_PKG_VER}"
+
+          echo "committed=true" >> "${GITHUB_OUTPUT}"
+
+      # ================================================================
+      # PUSH COMMIT + RELEASE TAG
+      # ================================================================
+
+      - name: Push commit
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true'
+        run: |
+          set -e
 
           git push \
             origin \
             "HEAD:${{ github.ref_name }}"
+
+      - name: Create tag
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true'
+        run: |
+          set -e
+
+          git tag "${{ steps.vars.outputs.release_tag }}"
+
+          git push \
+            origin \
+            "${{ steps.vars.outputs.release_tag }}"
+
+      # ================================================================
+      # CREATE GITHUB RELEASE
+      # ================================================================
+
+      - name: Create release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+
+          NOTES_FILE="${GITHUB_WORKSPACE}/release-notes.md"
+
+          {
+            echo "Offline npm cache for ONLYOFFICE DocumentServer (FreeBSD, npm ${NPM_VER})."
+            echo
+            echo "## Build metadata"
+            echo
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| DS tag | \`${DS_TAG}\` |"
+            echo "| Node | \`${FREEBSD_NODE_VER}\` |"
+            echo "| FreeBSD node major | \`${NODE_MAJOR}\` |"
+            echo "| npm | \`${NPM_VER}\` |"
+            echo "| @yao-pkg/pkg | \`${YAO_PKG_VER}\` |"
+            echo "| @yao-pkg/pkg-fetch | \`${PKG_FETCH_VER}\` |"
+            echo "| Published pkg-fetch Node | \`${PUBLISHED_NODE_VER}\` |"
+            echo "| pkg-fetch baseline | \`${PKG_FETCH_BASELINE}\` |"
+            echo "| pkg-fetch leapfrog | \`${PKG_FETCH_LEAPFROG}\` |"
+            echo "| pkg-fetch HEAD SHA | \`${PKG_FETCH_HEAD_SHA:-N/A}\` |"
+            echo "| FreeBSD node patches | \`${FREEBSD_PATCH_COUNT}\` |"
+            echo
+            echo "## Lockfiles"
+            echo
+            echo "This cache uses \`package-lock.json\` (lockfile-version 3)."
+            echo "npm 12 ignores \`npm-shrinkwrap.json\` for these trees, and the"
+            echo "old shrinkwrap metadata has been removed from the repository."
+            echo
+            echo "## Approved lifecycle scripts"
+            echo
+            echo '```'
+            cat "${GITHUB_WORKSPACE}/npm-allow-scripts.txt"
+            echo '```'
+            echo
+            echo "All 13 target directories are audited with"
+            echo "\`npm approve-scripts --allow-scripts-pending\`; any unlisted"
+            echo "install script fails the build."
+            echo
+            echo "## distinfo"
+            echo
+            echo '```'
+            echo "SHA256 (${TAR_NAME}) = $(sha256sum "${TAR_NAME}" | awk '{print $1}')"
+            echo "SIZE (${TAR_NAME}) = $(stat -c %s "${TAR_NAME}")"
+            echo '```'
+          } > "${NOTES_FILE}"
+
+          gh release create \
+            "${{ steps.vars.outputs.release_tag }}" \
+            "${TAR_NAME}" \
+            --title "NPM Cache ${{ steps.vars.outputs.release_tag }}" \
+            --notes-file "${NOTES_FILE}"
+
+      - name: Upload tarball as workflow artifact (no-release runs)
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.publish_release != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: onlyoffice-DS-npm-cache-${{ steps.vars.outputs.release_tag }}
+          path: ${{ env.TAR_NAME }}
+          retention-days: 7
