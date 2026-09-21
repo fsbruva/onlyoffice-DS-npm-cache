@@ -1156,7 +1156,7 @@ jobs:
               npm approve-scripts --allow-scripts-pending
             )
 
-            if [ -n "${output}" ]; then
+            if [ -n "${output}" && [ "${output}" != "No packages with unreviewed install scripts." ]; then
               echo "${output}"
               pending=1
             else
