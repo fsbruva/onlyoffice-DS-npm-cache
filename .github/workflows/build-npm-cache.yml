@@ -1329,14 +1329,30 @@ jobs:
           # source-relative directory:
           #
           #   package-locks/<source-relative-directory>/package-lock.json
-          #   package-locks/<source-relative-directory>/package.json
+          #   package-locks/<source-relative-directory>/package.json   (if present)
           #
-          # package.json travels with every lock file because npm 12 stores
-          # the allowScripts policy there.
+          # package.json is captured alongside its lock file ONLY where it
+          # matters: npm 12 stores the allowScripts policy in package.json,
+          # so any directory with an approve-scripts entry (recorded in
+          # npm-allow-scripts.txt by the audit step earlier in this job)
+          # MUST ship its package.json, or the approval is lost.
+          #
+          # Directories with no approval entry may or may not have their
+          # own package.json in the source tree (e.g. sdkjs/build ships
+          # none in this DS tag). For those, package.json is copied on a
+          # best-effort basis and its absence is not an error.
           #
           # The Yao pkg projects are the exception. They have separate
           # architecture-specific dependency trees and retain the existing
           # root-level naming convention used by the FreeBSD port.
+
+          APPROVE_MAP="${GITHUB_WORKSPACE}/npm-allow-scripts.txt"
+
+          requires_package_json() {
+            # $1: source-relative directory, e.g. "server/Common"
+            [ -f "${APPROVE_MAP}" ] || return 1
+            grep -qE "^src/${1}[[:space:]]" "${APPROVE_MAP}"
+          }
 
           for rel_path in \
             sdkjs/build \
@@ -1362,19 +1378,22 @@ jobs:
               exit 1
             fi
 
-            if [ ! -f "${source_pkg}" ]; then
-              echo "ERROR: Missing package.json:"
+            mkdir -p "${target_dir}"
+            cp "${source_lock}" "${target_dir}/package-lock.json"
+            echo "  ${target_dir}/package-lock.json"
+
+            if [ -f "${source_pkg}" ]; then
+              cp "${source_pkg}" "${target_dir}/package.json"
+              echo "  ${target_dir}/package.json"
+            elif requires_package_json "${rel_path}"; then
+              echo "ERROR: ${rel_path} has an approve-scripts entry but no package.json:"
               echo "  ${source_pkg}"
+              echo "  (the allowScripts approval recorded there would be lost)"
               exit 1
+            else
+              echo "  ${target_dir}/package.json: not present in source, skipping (no approval entry for this dir)"
             fi
 
-            mkdir -p "${target_dir}"
-
-            cp "${source_lock}" "${target_dir}/package-lock.json"
-            cp "${source_pkg}"  "${target_dir}/package.json"
-
-            echo "  ${target_dir}/package-lock.json"
-            echo "  ${target_dir}/package.json"
           done
 
           echo
@@ -1954,6 +1973,7 @@ jobs:
             server-Common-package.json \
             server-DocService-package.json \
             server-Metrics-package.json \
+            web-apps-build-package.json \
             "${DIR_NAME}/"
 
           # The lifecycle-script approval table, for auditability.
@@ -2021,7 +2041,8 @@ jobs:
             sdkjs-package.json \
             server-Common-package.json \
             server-DocService-package.json \
-            server-Metrics-package.json
+            server-Metrics-package.json \
+            web-apps-build-package.json
 
           # Pick up deletions performed by the cleanout step.
           git add -u
