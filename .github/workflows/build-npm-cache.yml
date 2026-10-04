@@ -116,7 +116,7 @@ on:
       node_major:
         description: 'Node.js major version (e.g. 24)'
         required: true
-        default: '24'
+        default: '26'
       npm_version:
         description: 'npm version used in the jail (must match www/npm-nodeXX exactly)'
         required: true
@@ -124,7 +124,7 @@ on:
       yao_pkg_ver:
         description: '@yao-pkg/pkg version (e.g. 6.22.0)'
         required: true
-        default: '6.22.0'
+        default: '6.23.0'
       publish_release:
         description: 'Create tag + GitHub release (uncheck for metadata-only dev runs)'
         type: boolean
@@ -142,9 +142,9 @@ env:
     ${{ github.event_name == 'workflow_dispatch'
         && format('v{0}.{1}', github.event.inputs.ds_version, github.event.inputs.ds_build)
         || github.ref_name }}
-  NODE_MAJOR:  "${{ github.event.inputs.node_major  || '24' }}"
+  NODE_MAJOR:  "${{ github.event.inputs.node_major  || '26' }}"
   NPM_VER:     "${{ github.event.inputs.npm_version || '12.0.2' }}"
-  YAO_PKG_VER: "${{ github.event.inputs.yao_pkg_ver || '6.22.0' }}"
+  YAO_PKG_VER: "${{ github.event.inputs.yao_pkg_ver || '6.23.0' }}"
   NPM_CACHE:   "${{ github.workspace }}/npm-cache"
   TEMP_CACHE:  "${{ github.workspace }}/temp-cache"
 
