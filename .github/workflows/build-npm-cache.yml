@@ -108,15 +108,15 @@ on:
       ds_version:
         description: 'DISTVERSION (e.g. 9.1.0)'
         required: true
-        default: '9.4.0'
+        default: '10.0.0'
       ds_build:
         description: 'DS_BUILD number (e.g. 177)'
         required: true
-        default: '129'
+        default: '169'
       node_major:
         description: 'Node.js major version (e.g. 24)'
         required: true
-        default: '26'
+        default: '24'
       npm_version:
         description: 'npm version used in the jail (must match www/npm-nodeXX exactly)'
         required: true
@@ -142,7 +142,7 @@ env:
     ${{ github.event_name == 'workflow_dispatch'
         && format('v{0}.{1}', github.event.inputs.ds_version, github.event.inputs.ds_build)
         || github.ref_name }}
-  NODE_MAJOR:  "${{ github.event.inputs.node_major  || '26' }}"
+  NODE_MAJOR:  "${{ github.event.inputs.node_major  || '24' }}"
   NPM_VER:     "${{ github.event.inputs.npm_version || '12.0.2' }}"
   YAO_PKG_VER: "${{ github.event.inputs.yao_pkg_ver || '6.23.0' }}"
   NPM_CACHE:   "${{ github.workspace }}/npm-cache"
