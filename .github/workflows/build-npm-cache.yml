@@ -579,7 +579,6 @@ jobs:
           PATCH_WORKSPACE="${GITHUB_WORKSPACE}/patch-workspace"
           rm -rf "${PATCH_WORKSPACE}"
           mkdir -p "${PATCH_WORKSPACE}"
-
           cd "${PATCH_WORKSPACE}"
 
           echo "--- Installing published @yao-pkg/pkg ---"
@@ -592,13 +591,6 @@ jobs:
 
           PKG_FETCH_DIR="${PATCH_WORKSPACE}/node_modules/@yao-pkg/pkg-fetch"
           PUBLISHED_PATCH_DIR="${PKG_FETCH_DIR}/patches"
-
-          if [ ! -d "${PUBLISHED_PATCH_DIR}" ]; then
-            echo "ERROR: Installed pkg-fetch has no patches directory:"
-            echo "  ${PUBLISHED_PATCH_DIR}"
-            exit 1
-          fi
-
           PUBLISHED_PATCH="${PUBLISHED_PATCH_DIR}/node.v${PUBLISHED_NODE_VER}.cpp.patch"
 
           if [ ! -f "${PUBLISHED_PATCH}" ]; then
@@ -614,134 +606,14 @@ jobs:
           echo "  pkg-fetch version:   ${PKG_FETCH_VER}"
 
           # ------------------------------------------------------------
-          # Obtain the target pkg-fetch patch.
-          #
-          # If the released pkg-fetch already supports the exact FreeBSD
-          # Node version, use its patch directly.
-          #
-          # Otherwise, obtain pkg-fetch HEAD and require it to contain
-          # an exact patch for FREEBSD_NODE_VER.
-          # ------------------------------------------------------------
-
-          if [ "${PUBLISHED_NODE_VER}" = "${FREEBSD_NODE_VER}" ]; then
-
-            echo
-            echo "Published pkg-fetch already supports the FreeBSD Node version."
-            echo "No pkg-fetch leapfrog is required."
-
-            PKG_FETCH_LEAPFROG="no"
-            PKG_FETCH_BASELINE="published"
-            PKG_FETCH_HEAD_SHA=""
-
-            TARGET_PATCH="${PUBLISHED_PATCH}"
-
-          else
-
-            echo
-            echo "Published pkg-fetch does not support the FreeBSD Node version."
-            echo "Fetching pkg-fetch HEAD for the exact target patch."
-
-            PKG_FETCH_HEAD_DIR="${GITHUB_WORKSPACE}/pkg-fetch-head"
-
-            rm -rf "${PKG_FETCH_HEAD_DIR}"
-
-            git clone \
-              --depth 1 \
-              https://github.com/yao-pkg/pkg-fetch.git \
-              "${PKG_FETCH_HEAD_DIR}"
-
-            PKG_FETCH_HEAD_SHA=$(
-              git -C "${PKG_FETCH_HEAD_DIR}" rev-parse HEAD
-            )
-
-            HEAD_PATCHES_JSON="${PKG_FETCH_HEAD_DIR}/patches/patches.json"
-            HEAD_TARGET_PATCH="${PKG_FETCH_HEAD_DIR}/patches/node.v${FREEBSD_NODE_VER}.cpp.patch"
-
-            if [ ! -f "${HEAD_PATCHES_JSON}" ]; then
-              echo "ERROR: pkg-fetch HEAD has no patches.json:"
-              echo "  ${HEAD_PATCHES_JSON}"
-              exit 1
-            fi
-
-            if [ ! -f "${HEAD_TARGET_PATCH}" ]; then
-              echo "ERROR: pkg-fetch HEAD does not contain an exact patch for:"
-              echo "  Node ${FREEBSD_NODE_VER}"
-              echo
-              echo "Expected:"
-              echo "  ${HEAD_TARGET_PATCH}"
-              echo
-              echo "Available Node ${NODE_MAJOR}.x patches:"
-              find "${PKG_FETCH_HEAD_DIR}/patches" \
-                -maxdepth 1 \
-                -type f \
-                -name "node.v${NODE_MAJOR}.*.cpp.patch" \
-                -printf '  %f\n' |
-              sort -V
-              exit 1
-            fi
-
-            # Verify that patches.json actually maps the target version to
-            # the exact target patch. Do not merely rely on the filename.
-            node - "${HEAD_PATCHES_JSON}" "${FREEBSD_NODE_VER}" <<'NODE_EOF'
-          const fs = require('fs');
-
-          const patchesFile = process.argv[2];
-          const nodeVersion = process.argv[3];
-
-          const data = JSON.parse(fs.readFileSync(patchesFile, 'utf8'));
-          const key = `v${nodeVersion}`;
-          const expected = `node.v${nodeVersion}.cpp.patch`;
-
-          if (!Object.prototype.hasOwnProperty.call(data, key)) {
-            console.error(`ERROR: patches.json has no entry for ${key}`);
-            process.exit(1);
-          }
-
-          const value = data[key];
-
-          if (!Array.isArray(value) || !value.includes(expected)) {
-            console.error(`ERROR: patches.json entry for ${key} does not contain ${expected}`);
-            console.error(`Actual entry: ${JSON.stringify(value)}`);
-            process.exit(1);
-          }
-
-          console.log(`Verified patches.json: ${key} -> ${expected}`);
-          NODE_EOF
-
-            echo
-            echo "pkg-fetch HEAD:"
-            echo "  SHA: ${PKG_FETCH_HEAD_SHA}"
-            echo "  Node patch: node.v${FREEBSD_NODE_VER}.cpp.patch"
-
-            # Replace patches.json with the HEAD version and install the
-            # exact target patch from HEAD into the released pkg-fetch tree.
-            #
-            # The old published Node patch is deliberately retained. The
-            # modified patches.json selects the target patch.
-            cp \
-              "${HEAD_PATCHES_JSON}" \
-              "${PUBLISHED_PATCH_DIR}/patches.json"
-
-            cp \
-              "${HEAD_TARGET_PATCH}" \
-              "${PUBLISHED_PATCH_DIR}/node.v${FREEBSD_NODE_VER}.cpp.patch"
-
-            PKG_FETCH_LEAPFROG="yes"
-            PKG_FETCH_BASELINE="pkg-fetch-head"
-
-            TARGET_PATCH="${PUBLISHED_PATCH_DIR}/node.v${FREEBSD_NODE_VER}.cpp.patch"
-
-          fi
-
-          # ------------------------------------------------------------
-          # Copy FreeBSD Node patches.
+          # FreeBSD Node patches (needed BEFORE candidate selection,
+          # because each candidate is trial-applied together with them).
           # ------------------------------------------------------------
 
           FREEBSD_PATCH_DIR="${PATCH_WORKSPACE}/freebsd-patches"
           mkdir -p "${FREEBSD_PATCH_DIR}"
 
-          NODE_PORT_DIR="${GITHUB_WORKSPACE}/freebsd-ports/www/node${NODE_MAJOR}"
-          NODE_PORT_FILES="${NODE_PORT_DIR}/files"
+          NODE_PORT_FILES="${GITHUB_WORKSPACE}/freebsd-ports/www/node${NODE_MAJOR}/files"
 
           if [ ! -d "${NODE_PORT_FILES}" ]; then
             echo "ERROR: FreeBSD node${NODE_MAJOR} port has no files directory:"
@@ -750,63 +622,250 @@ jobs:
           fi
 
           find "${NODE_PORT_FILES}" \
-            -maxdepth 1 \
-            -type f \
-            -name 'patch-*' \
+            -maxdepth 1 -type f -name 'patch-*' \
             -exec cp {} "${FREEBSD_PATCH_DIR}/" \;
 
           FREEBSD_PATCH_COUNT=$(
-            find "${FREEBSD_PATCH_DIR}" \
-              -maxdepth 1 \
-              -type f \
-              -name 'patch-*' |
-            wc -l
+            find "${FREEBSD_PATCH_DIR}" -maxdepth 1 -type f -name 'patch-*' | wc -l
           )
 
           if [ "${FREEBSD_PATCH_COUNT}" -eq 0 ]; then
-            echo "ERROR: No FreeBSD Node patches were found in:"
-            echo "  ${NODE_PORT_FILES}"
+            echo "ERROR: No FreeBSD Node patches found in ${NODE_PORT_FILES}"
             exit 1
           fi
 
           echo
-          echo "FreeBSD patches:"
-          find "${FREEBSD_PATCH_DIR}" \
-            -maxdepth 1 \
-            -type f \
-            -name 'patch-*' \
-            -printf '  %f\n' |
-          sort
+          echo "FreeBSD patches (${FREEBSD_PATCH_COUNT}):"
+          find "${FREEBSD_PATCH_DIR}" -maxdepth 1 -type f -name 'patch-*' -printf '  %f\n' | sort
+
+          # ------------------------------------------------------------
+          # Node source tree for trial application.
+          # ------------------------------------------------------------
+
+          TRIAL_DIR="${GITHUB_WORKSPACE}/node-patch-trial"
+          rm -rf "${TRIAL_DIR}"
+          mkdir -p "${TRIAL_DIR}"
+
+          NODE_TARBALL="node-v${FREEBSD_NODE_VER}.tar.gz"
+          curl --fail --location --retry 3 --silent --show-error \
+            -o "${TRIAL_DIR}/${NODE_TARBALL}" \
+            "https://nodejs.org/dist/v${FREEBSD_NODE_VER}/${NODE_TARBALL}"
+
+          tar -xzf "${TRIAL_DIR}/${NODE_TARBALL}" -C "${TRIAL_DIR}"
+          NODE_SOURCE_DIR="${TRIAL_DIR}/node-v${FREEBSD_NODE_VER}"
+
+          if [ ! -d "${NODE_SOURCE_DIR}" ]; then
+            echo "ERROR: Node source directory was not created: ${NODE_SOURCE_DIR}"
+            exit 1
+          fi
+
+          # ------------------------------------------------------------
+          # Helpers
+          #
+          # build_combined <pkg-fetch node patch> <output>
+          #   pkg-fetch patch + FreeBSD patches (paths prefixed with node/
+          #   so they apply at -p1 like the pkg-fetch patch does).
+          #
+          # trial_apply <pkg-fetch node patch> <label>
+          #   Strict (--fuzz=0) dry run of the combined patch against the
+          #   exact FreeBSD Node source.
+          # ------------------------------------------------------------
+
+          build_combined() {
+            cp "$1" "$2"
+            for patch_file in "${FREEBSD_PATCH_DIR}"/patch-*; do
+              [ -f "${patch_file}" ] || continue
+              sed 's#^--- #--- node/#g; s#^+++ #+++ node/#g' "${patch_file}" >> "$2"
+            done
+          }
+
+          trial_apply() {
+            build_combined "$1" "${PATCH_WORKSPACE}/trial.patch"
+            (
+              cd "${NODE_SOURCE_DIR}"
+              patch --dry-run --fuzz=0 -p1 < "${PATCH_WORKSPACE}/trial.patch"
+            ) > "${PATCH_WORKSPACE}/trial-$2.log" 2>&1
+          }
+
+          # ------------------------------------------------------------
+          # Gather candidate pkg-fetch patches for this Node major.
+          #
+          # Source 1: pkg-fetch git history. For each node.vX.cpp.patch
+          #           ever added, take the LAST revision in which it
+          #           existed (the commit before it was renamed/deleted,
+          #           or HEAD if it is still present).
+          # Source 2: the published release's own patch (always wins for
+          #           its own version).
+          # ------------------------------------------------------------
+
+          CAND_DIR="${PATCH_WORKSPACE}/candidates"
+          mkdir -p "${CAND_DIR}"
+
+          HISTORY_DIR="${GITHUB_WORKSPACE}/pkg-fetch-history"
+          rm -rf "${HISTORY_DIR}"
+          PKG_FETCH_HEAD_SHA=""
+
+          if git clone --quiet --filter=blob:none --no-checkout \
+               https://github.com/yao-pkg/pkg-fetch.git "${HISTORY_DIR}"; then
+
+            PKG_FETCH_HEAD_SHA=$(git -C "${HISTORY_DIR}" rev-parse HEAD)
+            echo
+            echo "pkg-fetch HEAD: ${PKG_FETCH_HEAD_SHA}"
+
+            HISTORY_VERS=$(
+              git -C "${HISTORY_DIR}" log \
+                --no-renames --diff-filter=A --name-only --format= \
+                -- "patches/node.v${NODE_MAJOR}.*.cpp.patch" |
+              sed -n 's#^patches/node\.v\([0-9][0-9.]*\)\.cpp\.patch$#\1#p' |
+              sort -Vu
+            )
+
+            for v in ${HISTORY_VERS}; do
+              rel="patches/node.v${v}.cpp.patch"
+
+              del=$(
+                git -C "${HISTORY_DIR}" log \
+                  --no-renames --diff-filter=D --format=%H -n1 -- "${rel}"
+              )
+
+              if [ -n "${del}" ]; then
+                ref="${del}^"
+              else
+                ref="HEAD"
+              fi
+
+              if git -C "${HISTORY_DIR}" show "${ref}:${rel}" \
+                   > "${CAND_DIR}/${v}.patch" 2>/dev/null; then
+                git -C "${HISTORY_DIR}" rev-parse "${ref}" > "${CAND_DIR}/${v}.commit"
+              else
+                rm -f "${CAND_DIR}/${v}.patch"
+              fi
+            done
+          else
+            echo "WARNING: could not clone pkg-fetch history; using published patch only."
+          fi
+
+          cp "${PUBLISHED_PATCH}" "${CAND_DIR}/${PUBLISHED_NODE_VER}.patch"
+          echo "published (pkg-fetch ${PKG_FETCH_VER})" > "${CAND_DIR}/${PUBLISHED_NODE_VER}.commit"
+
+          ALL_VERS=$(
+            find "${CAND_DIR}" -maxdepth 1 -name '*.patch' -printf '%f\n' |
+            sed 's/\.patch$//' |
+            sort -V
+          )
 
           echo
-          echo "FreeBSD patch count: ${FREEBSD_PATCH_COUNT}"
+          echo "Candidate pkg-fetch patch versions:"
+          printf '  %s\n' ${ALL_VERS}
 
-          # ------------------------------------------------------------
-          # Build the final Node patch.
-          #
-          # pkg-fetch patches are patch files against a Node source tree.
-          # FreeBSD's node port patches use the same source-tree path
-          # convention. Prefixing their ---/+++ paths with "node/" allows
-          # their hunks to be appended directly to the pkg-fetch patch.
-          # ------------------------------------------------------------
+          # Order: exact, then nearest lower (descending), then nearest
+          # higher (ascending).
+          EXACT=""
+          LOWER=""
+          HIGHER=""
 
-          FINAL_PATCH="${TARGET_PATCH}.freebsd"
-
-          cp "${TARGET_PATCH}" "${FINAL_PATCH}"
-
-          for patch_file in \
-            "${FREEBSD_PATCH_DIR}"/patch-*
-          do
-            if [ ! -f "${patch_file}" ]; then
+          for v in ${ALL_VERS}; do
+            if [ "${v}" = "${FREEBSD_NODE_VER}" ]; then
+              EXACT="${v}"
               continue
             fi
-
-            sed \
-              's#^--- #--- node/#g; s#^+++ #+++ node/#g' \
-              "${patch_file}" >> "${FINAL_PATCH}"
+            first=$(printf '%s\n%s\n' "${v}" "${FREEBSD_NODE_VER}" | sort -V | head -1)
+            if [ "${first}" = "${v}" ]; then
+              LOWER="${v} ${LOWER}"
+            else
+              HIGHER="${HIGHER} ${v}"
+            fi
           done
 
-          mv "${FINAL_PATCH}" "${TARGET_PATCH}"
+          # ------------------------------------------------------------
+          # Trial-apply each candidate; first clean one wins.
+          # ------------------------------------------------------------
+
+          echo
+          echo "Trial-applying candidates (strict, --fuzz=0)..."
+
+          SELECTED_VER=""
+
+          for v in ${EXACT} ${LOWER} ${HIGHER}; do
+            if trial_apply "${CAND_DIR}/${v}.patch" "${v}"; then
+              echo "  OK    ${v}"
+              SELECTED_VER="${v}"
+              break
+            else
+              echo "  FAIL  ${v}"
+            fi
+          done
+
+          if [ -z "${SELECTED_VER}" ]; then
+            echo
+            echo "ERROR: No pkg-fetch patch (+ FreeBSD patches) applies cleanly to Node ${FREEBSD_NODE_VER}."
+            for log in "${PATCH_WORKSPACE}"/trial-*.log; do
+              echo
+              echo "--- ${log##*/} ---"
+              tail -n 15 "${log}"
+            done
+            exit 1
+          fi
+
+          if [ "${SELECTED_VER}" = "${FREEBSD_NODE_VER}" ]; then
+            PKG_FETCH_PATCH_KIND="exact"
+          elif [ -n "$(printf '%s' "${LOWER}" | grep -wF "${SELECTED_VER}" || true)" ]; then
+            PKG_FETCH_PATCH_KIND="nearest-lower"
+          else
+            PKG_FETCH_PATCH_KIND="nearest-higher"
+          fi
+
+          PKG_FETCH_PATCH_COMMIT=$(cat "${CAND_DIR}/${SELECTED_VER}.commit")
+
+          if [ "${PKG_FETCH_PATCH_KIND}" != "exact" ]; then
+            echo "::warning::No exact pkg-fetch patch for Node ${FREEBSD_NODE_VER}; using ${PKG_FETCH_PATCH_KIND} patch from Node ${SELECTED_VER}."
+          fi
+
+          echo
+          echo "Selected pkg-fetch patch:"
+          echo "  Node version: ${SELECTED_VER}"
+          echo "  Kind:         ${PKG_FETCH_PATCH_KIND}"
+          echo "  Source:       ${PKG_FETCH_PATCH_COMMIT}"
+
+          # ------------------------------------------------------------
+          # Install the selected patch under the FreeBSD version's name
+          # and make sure patches.json maps the FreeBSD version to it.
+          # Existing patches.json entries are preserved.
+          # ------------------------------------------------------------
+
+          TARGET_PATCH="${PUBLISHED_PATCH_DIR}/node.v${FREEBSD_NODE_VER}.cpp.patch"
+          cp "${CAND_DIR}/${SELECTED_VER}.patch" "${TARGET_PATCH}"
+
+          node - "${PUBLISHED_PATCH_DIR}/patches.json" "${FREEBSD_NODE_VER}" <<'NODE_EOF'
+          const fs = require('fs');
+          const [file, ver] = process.argv.slice(2);
+          const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+          const key = `v${ver}`;
+          const name = `node.v${ver}.cpp.patch`;
+          const cur = data[key];
+          if (Array.isArray(cur) && cur.includes(name)) {
+            console.log(`patches.json already maps ${key} -> ${name}`);
+          } else {
+            data[key] = [name];
+            fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+            console.log(`patches.json: added ${key} -> ${name}`);
+          }
+          NODE_EOF
+
+          if [ "${FREEBSD_NODE_VER}" = "${PUBLISHED_NODE_VER}" ]; then
+            PKG_FETCH_LEAPFROG="no"
+            PKG_FETCH_BASELINE="published"
+          else
+            PKG_FETCH_LEAPFROG="yes"
+            PKG_FETCH_BASELINE="pkg-fetch-history"
+          fi
+
+          # ------------------------------------------------------------
+          # Append FreeBSD patches to the target Node patch (in place).
+          # ------------------------------------------------------------
+
+          build_combined "${TARGET_PATCH}" "${TARGET_PATCH}.freebsd"
+          mv "${TARGET_PATCH}.freebsd" "${TARGET_PATCH}"
 
           # ------------------------------------------------------------
           # Generate one patch-package patch containing ALL changes:
@@ -890,6 +949,9 @@ jobs:
             echo "PKG_FETCH_LEAPFROG=${PKG_FETCH_LEAPFROG}"
             echo "PKG_FETCH_VER=${PKG_FETCH_VER}"
             echo "PKG_FETCH_HEAD_SHA=${PKG_FETCH_HEAD_SHA}"
+            echo "PKG_FETCH_PATCH_VER=${SELECTED_VER}"
+            echo "PKG_FETCH_PATCH_KIND=${PKG_FETCH_PATCH_KIND}"
+            echo "PKG_FETCH_PATCH_COMMIT=${PKG_FETCH_PATCH_COMMIT}"
             echo "FREEBSD_PATCH_COUNT=${FREEBSD_PATCH_COUNT}"
           } > "${GITHUB_WORKSPACE}/pkg-fetch-build-info.txt"
 
@@ -898,6 +960,9 @@ jobs:
             echo "PKG_FETCH_BASELINE=${PKG_FETCH_BASELINE}"
             echo "PKG_FETCH_LEAPFROG=${PKG_FETCH_LEAPFROG}"
             echo "PKG_FETCH_HEAD_SHA=${PKG_FETCH_HEAD_SHA}"
+            echo "PKG_FETCH_PATCH_VER=${SELECTED_VER}"
+            echo "PKG_FETCH_PATCH_KIND=${PKG_FETCH_PATCH_KIND}"
+            echo "PKG_FETCH_PATCH_COMMIT=${PKG_FETCH_PATCH_COMMIT}"
             echo "FREEBSD_PATCH_COUNT=${FREEBSD_PATCH_COUNT}"
             echo "EXTRA_PATCH_NAME=extra-patch-pkg-fetch_patches_node.v${FREEBSD_NODE_VER}.patch"
           } >> "${GITHUB_ENV}"
@@ -912,6 +977,8 @@ jobs:
           echo "Baseline:           ${PKG_FETCH_BASELINE}"
           echo "Leapfrog:           ${PKG_FETCH_LEAPFROG}"
           echo "pkg-fetch HEAD SHA: ${PKG_FETCH_HEAD_SHA:-N/A}"
+          echo "pkg-fetch patch from:  Node ${SELECTED_VER} (${PKG_FETCH_PATCH_KIND})"
+          echo "pkg-fetch patch src:   ${PKG_FETCH_PATCH_COMMIT}"
           echo "FreeBSD patches:    ${FREEBSD_PATCH_COUNT}"
 
       # ================================================================
@@ -2203,6 +2270,8 @@ jobs:
             echo "pkg-fetch baseline:  ${PKG_FETCH_BASELINE}"
             echo "pkg-fetch leapfrog:  ${PKG_FETCH_LEAPFROG}"
             echo "pkg-fetch HEAD SHA:  ${PKG_FETCH_HEAD_SHA:-N/A}"
+            echo "pkg-fetch patch from:  Node ${PKG_FETCH_PATCH_VER} (${PKG_FETCH_PATCH_KIND})"
+            echo "pkg-fetch patch src:   ${PKG_FETCH_PATCH_COMMIT}"
             echo "FreeBSD patches:     ${FREEBSD_PATCH_COUNT}"
             echo "Lockfile format:     package-lock.json (lockfile-version 3)"
             echo "Built from:          ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
@@ -2319,6 +2388,8 @@ jobs:
             echo "| pkg-fetch baseline | \`${PKG_FETCH_BASELINE}\` |"
             echo "| pkg-fetch leapfrog | \`${PKG_FETCH_LEAPFROG}\` |"
             echo "| pkg-fetch HEAD SHA | \`${PKG_FETCH_HEAD_SHA:-N/A}\` |"
+            echo "| pkg-fetch patch source | \`Node ${PKG_FETCH_PATCH_VER} (${PKG_FETCH_PATCH_KIND})\` |"
+            echo "| pkg-fetch patch commit | \`${PKG_FETCH_PATCH_COMMIT}\` |"
             echo "| FreeBSD node patches | \`${FREEBSD_PATCH_COUNT}\` |"
             echo
             echo "## Lockfiles"
