@@ -660,6 +660,43 @@ jobs:
           fi
 
           # ------------------------------------------------------------
+          # Preflight: FreeBSD patches alone against the target Node
+          # source. Independent of any pkg-fetch candidate.
+          # ------------------------------------------------------------
+
+          echo
+          echo "--- Preflight: FreeBSD patches vs Node ${FREEBSD_NODE_VER} ---"
+
+          PREFLIGHT_FAILED=0
+
+          for patch_file in "${FREEBSD_PATCH_DIR}"/patch-*; do
+            [ -f "${patch_file}" ] || continue
+            name="${patch_file##*/}"
+
+            if ( cd "${NODE_SOURCE_DIR}" &&
+                 patch --dry-run --fuzz=0 -p0 < "${patch_file}" ) >/dev/null 2>&1
+            then
+              echo "  OK         ${name}"
+            elif ( cd "${NODE_SOURCE_DIR}" &&
+                   patch --dry-run -p0 < "${patch_file}" ) >/dev/null 2>&1
+            then
+              echo "  OK (fuzz)  ${name}"
+            else
+              echo "  FAIL       ${name}"
+              ( cd "${NODE_SOURCE_DIR}" &&
+                patch --dry-run -p0 < "${patch_file}" ) 2>&1 | sed 's/^/      /' || true
+              PREFLIGHT_FAILED=1
+            fi
+          done
+
+          if [ "${PREFLIGHT_FAILED}" -ne 0 ]; then
+            echo
+            echo "ERROR: FreeBSD port patches do not apply to Node ${FREEBSD_NODE_VER}"
+            echo "       even with default fuzz. This is independent of pkg-fetch."
+            exit 1
+          fi
+
+          # ------------------------------------------------------------
           # Helpers
           #
           # build_combined <pkg-fetch node patch> <output>
@@ -683,7 +720,7 @@ jobs:
             build_combined "$1" "${PATCH_WORKSPACE}/trial.patch"
             (
               cd "${NODE_SOURCE_DIR}"
-              patch --dry-run --fuzz=0 -p1 < "${PATCH_WORKSPACE}/trial.patch"
+              patch --dry-run -p1 < "${PATCH_WORKSPACE}/trial.patch"
             ) > "${PATCH_WORKSPACE}/trial-$2.log" 2>&1
           }
 
@@ -802,7 +839,7 @@ jobs:
             for log in "${PATCH_WORKSPACE}"/trial-*.log; do
               echo
               echo "--- ${log##*/} ---"
-              tail -n 15 "${log}"
+              grep -B2 -E 'FAILED|can.t find' "${log}" || tail -n 15 "${log}"
             done
             exit 1
           fi
