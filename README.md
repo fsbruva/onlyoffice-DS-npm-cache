@@ -57,7 +57,7 @@ DocumentServer build with `--offline`, on FreeBSD, for both `amd64` and
 | `yao-pkg-package-amd64.json` / `yao-pkg-package-aarch64.json` | `package.json` for the `@yao-pkg/pkg` install, per architecture |
 | `yao-pkg-npm-package-lock-amd64.json` / `yao-pkg-npm-package-lock-aarch64.json` | `package-lock.json` for the `@yao-pkg/pkg` install, per architecture |
 | `npm-allow-scripts.txt` | The lifecycle-script approval table: which directories may run install scripts for which packages, and why |
-| `extra-patch-pkg-fetch_patches_node.v*.patch` | Composite FreeBSD patch for `@yao-pkg/pkg-fetch`, combining the (possibly leapfrogged) upstream Node patch with FreeBSD ports tree patches for the matching Node version |
+| `extra-patch-pkg-fetch_patches_node.v*.patch` | Composite `patch-package` patch for `@yao-pkg/pkg-fetch`: the selected pkg-fetch Node patch (exact, or the closest one that applies cleanly), a `patches.json` entry for the FreeBSD Node version, and the FreeBSD ports-tree Node patches appended |
 | `.github/workflows/build-npm-cache.yml` | The workflow that produces all of the above |
 
 `yao-pkg` is deliberately **not** nested inside `package-locks/`: it has two
@@ -73,7 +73,7 @@ The release tarball (attached to each GitHub Release) additionally contains:
 | Path | Description |
 |------|-------------|
 | `_cacache/` | The npm cache directory (`content-v2` tarballs + `index-v5` metadata) |
-| `build-info.txt` | Exact versions of Node, npm, `@yao-pkg/pkg`, `@yao-pkg/pkg-fetch`, and the pkg-fetch leapfrog decision used to build this cache |
+| `build-info.txt` | Exact versions of Node, npm, `@yao-pkg/pkg`, `@yao-pkg/pkg-fetch`, plus which pkg-fetch Node patch was selected, how it was classified (`exact`, `nearest-lower`, `nearest-higher`), and the pkg-fetch commit it came from |
 
 ---
 
@@ -169,28 +169,122 @@ FreeBSD ports tree (www/node<major>/Makefile.version, NODEJS_PORTVERSION)
             └─▶ PUBLISHED_NODE_VER  (resolved from pkg-fetch's patch filenames)
 ```
 
-If `PUBLISHED_NODE_VER == FREEBSD_NODE_VER`, the released `@yao-pkg/pkg-fetch`
-already has the patch this cache needs, and it's used directly.
+The released `@yao-pkg/pkg-fetch` and the FreeBSD Node port move independently,
+so `PUBLISHED_NODE_VER` is frequently behind, and sometimes *ahead* of,
+`FREEBSD_NODE_VER`. For example, a pkg-fetch release may carry patches for Node
+26.8.1 while the port is at 26.10.0 and pkg-fetch `HEAD` has already moved on to
+26.12.0. Simply using `HEAD` in that situation would give a patch for the wrong
+Node version, so the workflow does not assume any particular relationship
+between the two.
 
-If they differ — which happens whenever the FreeBSD Node port moves ahead of
-the last `@yao-pkg/pkg-fetch` release — the workflow **leapfrogs**: it clones
-`@yao-pkg/pkg-fetch` HEAD, verifies (via `patches/patches.json`, not just the
-filename) that HEAD actually maps `FREEBSD_NODE_VER` to an exact patch, and
-substitutes that patch and `patches.json` entry into the released package
-before continuing. FreeBSD ports-tree patches for that Node version are then
-appended, and `patch-package` produces one composite patch,
-`extra-patch-pkg-fetch_patches_node.v<FREEBSD_NODE_VER>.patch`, that is verified
-with a `patch --dry-run` against the real downloaded Node source tarball before
-the build proceeds.
+### How the pkg-fetch patch is selected
+
+pkg-fetch renames `node.vX.Y.Z.cpp.patch` on every Node bump, so older patches
+disappear from `HEAD` but remain in git history. The workflow uses both sources
+and lets **trial application against the real Node source** decide which patch
+to use, rather than trusting version numbers alone.
+
+**1. Preflight — FreeBSD patches alone.**
+The `files/patch-*` files from `www/node<major>` in the ports tree are
+dry-run against the Node source for `FREEBSD_NODE_VER`, independent of any
+pkg-fetch patch. Each is reported as `OK`, `OK (fuzz)`, or `FAIL`. Because
+these patches are the same regardless of which pkg-fetch patch is chosen, a
+failure here is reported directly instead of being mistaken for a pkg-fetch
+problem.
+
+**2. Gather candidates.**
+For the Node major in use, candidates come from:
+
+- **pkg-fetch git history** — every `node.v<major>.*.cpp.patch` ever added is
+  recovered at the *last revision in which it existed* (the commit before it
+  was renamed or deleted, or `HEAD` if it is still present).
+- **The published release** — its own patch is always used for its own version.
+
+**3. Order candidates.**
+
+1. the **exact** `FREEBSD_NODE_VER` patch, if one exists;
+2. then the **nearest lower** versions, descending;
+3. then the **nearest higher** versions, ascending.
+
+The reasoning is that the ports tree rarely modifies its patches when Node
+increments a patch version, and the upstream Node source those patches target
+changes slowly between nearby releases, so the closest version below the target
+is the most likely to still apply.
+
+**4. Trial-apply each candidate.**
+For each candidate, the pkg-fetch Node patch is combined with the FreeBSD patches
+(exactly as they will ship) and `patch --dry-run -p1` is run against the downloaded
+Node source tarball for `FREEBSD_NODE_VER`. **The first candidate that applies
+cleanly wins.** If none apply, the build fails and prints the relevant failure
+output for every candidate.
+
+Trial application deliberately uses `patch`'s **default fuzz**, not
+`--fuzz=0`. The FreeBSD ports framework applies port patches with default fuzz,
+and port patches are routinely a few lines out of position against newer
+sources; a stricter check here would reject patches that the actual port
+build accepts. Line-offset notices (`succeeded at N (offset M lines)`) are
+normal and expected.
+
+**5. Install the winner and record how it was chosen.**
+The selected patch is installed into the released `pkg-fetch` package under the
+FreeBSD version's name, `node.v<FREEBSD_NODE_VER>.cpp.patch`, regardless of which
+Node version it was originally written for, so that pkg-fetch resolves it for the
+target version. `patches.json` is **not** replaced wholesale — only a
+`v<FREEBSD_NODE_VER>` entry mapping to that filename is added, preserving every
+other entry from the published release.
+
+The selection is classified as one of:
+
+| Kind | Meaning |
+|------|---------|
+| `exact` | A pkg-fetch patch for exactly `FREEBSD_NODE_VER` was found |
+| `nearest-lower` | The patch written for a lower Node version applied cleanly |
+| `nearest-higher` | The patch written for a higher Node version applied cleanly |
+
+Any result other than `exact` emits a GitHub Actions `::warning::` annotation.
+
+**6. Produce the single composite patch.**
+The FreeBSD ports patches are appended to the selected Node patch (with their
+`---`/`+++` paths prefixed with `node/` so they apply at `-p1`), and
+[`patch-package`](https://github.com/ds300/patch-package) generates **one** final
+patch containing the `patches.json` change, the target Node patch, and the
+FreeBSD additions:
+
+```
+extra-patch-pkg-fetch_patches_node.v<FREEBSD_NODE_VER>.patch
+```
+
+The FreeBSD port therefore needs only one extra-patch file. A separate step
+re-verifies the final installed patch against the Node source as a second gate.
+
+> **A clean apply is not proof of correctness.** `patch` only confirms that the
+> hunks fit; it cannot tell whether a `nearest-lower` or `nearest-higher` patch
+> is still semantically right for the target Node version. When a build reports
+> anything other than `exact`, smoke-test the resulting `pkg` binary in the jail
+> at least once before relying on it.
+
+### What is recorded
+
+For every build, `build-info.txt` (in the tarball) and the GitHub Release notes
+include:
+
+| Field | Meaning |
+|-------|---------|
+| `FREEBSD_NODE_VER` | The exact Node version the cache targets |
+| `PUBLISHED_NODE_VER` | The Node version patched by the released pkg-fetch |
+| `PKG_FETCH_BASELINE` | `published` if the published patch version equals the target, otherwise `pkg-fetch-history` |
+| `PKG_FETCH_LEAPFROG` | `yes` if the published pkg-fetch did not match the target version, otherwise `no` |
+| `PKG_FETCH_HEAD_SHA` | `HEAD` of the pkg-fetch history clone used for the search (empty if the clone failed and only the published patch was used) |
+| `PKG_FETCH_PATCH_VER` | The Node version the selected pkg-fetch patch was originally written for |
+| `PKG_FETCH_PATCH_KIND` | `exact`, `nearest-lower`, or `nearest-higher` |
+| `PKG_FETCH_PATCH_COMMIT` | The pkg-fetch commit the selected patch came from, or `published (pkg-fetch <version>)` |
+
+Any cache can therefore be traced back to exactly which pkg-fetch source
+produced its patch, and whether that was a fallback.
 
 `npm_version` is supplied separately and must exactly match `www/npm-node<major>`
 in the ports tree — the workflow verifies both `node --version` and
 `npm --version` against their expected values before Phase 1 begins.
-
-The leapfrog decision (`published` vs. `pkg-fetch-head`, plus the HEAD commit
-SHA when leapfrogged) is recorded in `build-info.txt` and the GitHub Release
-notes, so any cache can be traced back to exactly which pkg-fetch source
-produced its patch.
 
 ---
 
@@ -203,9 +297,9 @@ fill in the inputs:
 |-------|-------------|---------|
 | `ds_version` | OnlyOffice DocumentServer `DISTVERSION` | `9.4.0` |
 | `ds_build` | DS build number | `129` |
-| `node_major` | Node.js major version — exact minor/patch resolved from the FreeBSD ports tree | `24` |
+| `node_major` | Node.js major version — exact minor/patch resolved from the FreeBSD ports tree | `26` |
 | `npm_version` | npm version used in the Poudriere jail — must exactly match `www/npm-node<major>` in the ports tree | `12.0.2` |
-| `yao_pkg_ver` | `@yao-pkg/pkg` version — `@yao-pkg/pkg-fetch` and its published Node patch are resolved from this | `6.22.0` |
+| `yao_pkg_ver` | `@yao-pkg/pkg` version — `@yao-pkg/pkg-fetch` and its published Node patch are resolved from this | `6.23.0` |
 | `publish_release` | Create a tag + GitHub Release + push the metadata commit. Uncheck for a metadata-only dry run — the tarball is still produced and attached as a workflow artifact instead | `true` (checked) |
 
 The workflow also runs automatically on `push: tags: v*`, in which case
@@ -215,11 +309,17 @@ back to its default.
 The workflow fails fast, with a clear error, if:
 - the requested `node_major` has no `NODEJS_PORTVERSION` in the FreeBSD ports
   tree,
-- `@yao-pkg/pkg-fetch` HEAD has no exact patch for that version when a
-  leapfrog is required,
+- the FreeBSD port patches do not apply to the target Node source even with
+  default fuzz (reported independently of pkg-fetch),
+- no pkg-fetch patch candidate — exact, lower, or higher — applies cleanly
+  together with the FreeBSD patches,
 - the installed Node/npm don't exactly match what was requested,
-- the generated pkg-fetch patch fails a dry-run against real Node source, or
+- the final generated pkg-fetch patch fails a dry-run against real Node source, or
 - any lifecycle script goes unapproved after the audit.
+
+When a non-exact pkg-fetch patch is used, the build succeeds but emits a warning
+annotation; this is intentional, since it is a real behavior change that should
+be reviewed.
 
 ### What the workflow does, step by step
 
@@ -229,8 +329,9 @@ The workflow fails fast, with a clear error, if:
    `www/node<major>/Makefile.version` — this becomes `FREEBSD_NODE_VER`, the
    authoritative target.
 4. **Resolve the published pkg-fetch version** — installs `@yao-pkg/pkg` into a
-   temp probe directory, reads which Node version its bundled `pkg-fetch`
-   actually has a patch for, and compares it against `FREEBSD_NODE_VER`.
+   temp probe directory and reads which Node version its bundled `pkg-fetch`
+   actually has a patch for (`PUBLISHED_NODE_VER`). This is informational and
+   provides one of the candidates; it is not assumed to equal `FREEBSD_NODE_VER`.
 5. **Install the exact target Node** (`FREEBSD_NODE_VER`), replacing the
    bootstrap version.
 6. **Install jail-matched npm** and verify both `node --version` and
@@ -239,12 +340,16 @@ The workflow fails fast, with a clear error, if:
    DS release tag.
 8. **Create patches** — writes the inline `patch -p0` diffs applied to
    `server`, `server/DocService`, `server/Metrics`, and `web-apps/build`.
-9. **Generate the pkg-fetch FreeBSD patch** — uses the published patch
-   directly, or leapfrogs to `@yao-pkg/pkg-fetch` HEAD as described above;
-   appends the FreeBSD ports-tree Node patches; produces one composite patch
-   via `patch-package`.
-10. **Verify the patch** — downloads the real Node source tarball for
-    `FREEBSD_NODE_VER` and dry-run applies the generated patch against it.
+9. **Generate the pkg-fetch FreeBSD patch** — copies the FreeBSD port patches,
+   downloads the Node source for `FREEBSD_NODE_VER`, preflights the FreeBSD
+   patches, gathers pkg-fetch candidates from the published release and git
+   history, trial-applies them (exact → nearest lower → nearest higher) with the
+   FreeBSD patches, installs the first that applies cleanly, adds the
+   `patches.json` entry, appends the FreeBSD patches, and produces one composite
+   patch via `patch-package`.
+10. **Verify the patch** — dry-run applies the final installed pkg-fetch Node patch
+    against the real Node source again, as a second gate on the `patch-package`
+    output.
 11. **Remove upstream lockfiles** — clears any `package-lock.json` or
     `npm-shrinkwrap.json` shipped upstream in every target directory, so Phase
     1 always generates fresh.
@@ -263,7 +368,7 @@ The workflow fails fast, with a clear error, if:
 16. **Smoke test** — verifies all 13 directories install successfully from the
     cache with `--offline`.
 17. **Report statistics** — file counts, cache size, tarball/packument split,
-    lockfile/package.json counts, resolved versions.
+    lockfile/package.json counts, resolved versions, pkg-fetch selection.
 18. **Clean obsolete/stale artifacts** — removes old shrinkwrap-era files, any
     `extra-patch-pkg-fetch_patches_node.v*.patch` for a Node version other than
     the current one, and root-level `*-package.json` files left over from
@@ -335,6 +440,11 @@ Unlike every `npm install` in this cache-build workflow, the jail's own
 one place the `allowScripts`-approved lifecycle scripts (`esbuild`, `sharp`,
 `gifsicle`, etc.) are actually meant to run, since their output is needed by
 the packaged software.
+
+The pkg-fetch extra-patch is applied to `yao-pkg/node_modules/@yao-pkg/pkg-fetch`
+and carries both the selected Node patch and the `patches.json` entry for the
+FreeBSD Node version, so pkg-fetch finds a patch for exactly the Node version the
+port builds.
 
 Specify the `_PKGFETCH_NODE_VERSION` and `_NPM_CACHE_TAG` variables in the
 FreeBSD `www/onlyoffice-documentserver` Makefile, and ensure the version of
